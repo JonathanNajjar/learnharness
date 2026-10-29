@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2Icon, MicIcon } from "lucide-react";
 import { useSettingsDialog } from "@/components/settings/settings-dialog";
 import { Hint } from "@/components/ui/hint";
-import { deepgramListenUrl, type DictationLanguage } from "@/src/core";
+import { deepgramEngine, type DictationEngine, type DictationLanguage } from "@/src/core";
 import { useDictationLanguage } from "@/components/dictation-preference";
 import { setDictationActive } from "@/components/dictation-state";
 export { isDictationActive } from "@/components/dictation-state";
@@ -90,7 +90,11 @@ export { isDictationActive } from "@/components/dictation-state";
  * endpointing=300, no interims. Silence streams too (the worklet never
  * pauses), so the socket never idles — no KeepAlive needed.
  */
-// URL construction lives in the browser-safe core; only language varies.
+// URL construction and the wire protocol live in the browser-safe core's
+// engine adapter (src/core/dictation-engine.ts); only language varies. This
+// file keeps the provider-neutral lifecycle and, for now, always uses the
+// Deepgram engine.
+const engine: DictationEngine = deepgramEngine;
 
 /** Meter tuning — the owner's tested values, see the file header. */
 const METER_FLOOR_DB = -50;
@@ -368,10 +372,9 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 	/** Open the Deepgram socket and wire its messages. `gen` guards staleness. */
 	const openSocket = useCallback(
 		(gen: number, token: string, language: DictationLanguage) => {
-			// Minted JWTs authenticate via the "bearer" subprotocol — ["token",
-			// jwt] is rejected at the handshake (verified live; "token" is for
-			// raw API keys only, as in the owner's pi dictate extension).
-			const ws = new WebSocket(deepgramListenUrl(language), ["bearer", token]);
+			// URL + auth (Deepgram: the "bearer" subprotocol) come from the engine.
+			const { url, protocols } = engine.socket(token, language);
+			const ws = new WebSocket(url, protocols);
 			wsRef.current = ws;
 
 			ws.addEventListener("open", () => {
@@ -379,30 +382,30 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 				// Mitigation A: everything captured during the handshake (or a
 				// reconnect gap) goes out now, in order — Deepgram accepts
 				// faster-than-realtime sends.
-				for (const frame of pendingRef.current) ws.send(frame);
+				for (const frame of pendingRef.current) ws.send(engine.encodeFrame(frame));
 				pendingRef.current = [];
 				setPhase("recording");
 			});
 			ws.addEventListener("message", (ev) => {
 				if (gen !== genRef.current) return;
-				let msg: any;
-				try {
-					msg = JSON.parse(ev.data as string);
-				} catch {
-					return;
-				}
-				if (msg.type === "Results") {
-					const text: string | undefined = msg.channel?.alternatives?.[0]?.transcript;
-					// Only finals stream (interim_results=false). DEFERRED (owner
-					// round 2): they buffer here and reach the input once, at
-					// teardown — the meter is the only live feedback.
-					if (msg.is_final && text) bufferRef.current.push(text);
+				const parsed = engine.parseMessage(ev.data as string);
+				// Only finals stream. DEFERRED (owner round 2): they buffer here
+				// and reach the input once, at teardown — the meter is the only
+				// live feedback.
+				bufferRef.current.push(...parsed.finals);
+				if (parsed.error) {
+					setError(parsed.error);
+					cleanup();
+				} else if (parsed.finished) {
+					// The engine says the stream is done without a server close
+					// (cleanup closes the socket ourselves).
+					cleanup();
 				}
 			});
 			ws.addEventListener("close", (ev) => {
 				if (gen !== genRef.current) return;
-				if (ev.code === 1000) {
-					// Our own CloseStream landing: finalize now — the stop path's
+				if (engine.isFinishedClose(ev.code)) {
+					// Our own end-of-stream landing: finalize now — the stop path's
 					// safety net stays as the no-close backstop only.
 					cleanup();
 					return;
@@ -484,7 +487,7 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 					levelRef.current = msg.rms ?? 0; // never reset to zero (dictate pattern)
 				} else if (msg.type === "audio") {
 					const ws = wsRef.current;
-					if (ws && ws.readyState === WebSocket.OPEN) ws.send(msg.buffer!);
+					if (ws && ws.readyState === WebSocket.OPEN) ws.send(engine.encodeFrame(msg.buffer!));
 					// Mitigation A: not OPEN yet (handshake or reconnect gap) —
 					// queue, capped; the open handler flushes in order.
 					else {
@@ -544,7 +547,7 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		const ws = wsRef.current;
 		if (ws && ws.readyState === WebSocket.OPEN) {
 			try {
-				ws.send(JSON.stringify({ type: "CloseStream" }));
+				for (const m of engine.endOfStream()) ws.send(m);
 			} catch {
 				cleanup();
 				return;
