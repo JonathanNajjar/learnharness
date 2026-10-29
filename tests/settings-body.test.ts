@@ -16,6 +16,7 @@ import {
 	parseGeneralSettingsBody,
 	parseCompactionSettingsBody,
 	parseGraphSettingsBody,
+	parseDictationSettingsBody,
 	SETTINGS_SECTIONS,
 } from "../src/server/settings-body.ts";
 
@@ -230,6 +231,22 @@ describe("parseCompactionSettingsBody (owner round 14)", () => {
 		const r = parseCompactionSettingsBody({ thresholdTokens: "big" });
 		assert.ok(!r.ok);
 		assert.match(r.error ?? "", /must be a number/);
+	});
+});
+
+describe("parseDictationSettingsBody (provider)", () => {
+	it("accepts language and provider, each optional", () => {
+		assert.deepEqual(parseDictationSettingsBody({ language: "pl", provider: "elevenlabs" }), { ok: true, settings: { language: "pl", provider: "elevenlabs" } });
+		assert.deepEqual(parseDictationSettingsBody({ provider: "deepgram" }), { ok: true, settings: { provider: "deepgram" } });
+		assert.deepEqual(parseDictationSettingsBody({ language: "en" }), { ok: true, settings: { language: "en" } });
+		assert.deepEqual(parseDictationSettingsBody({}), { ok: true, settings: {} });
+	});
+
+	it("rejects an unknown provider", () => {
+		for (const provider of ["whisper", 1, null]) {
+			const r = parseDictationSettingsBody({ provider });
+			assert.equal(r.ok, false, String(provider));
+		}
 	});
 });
 

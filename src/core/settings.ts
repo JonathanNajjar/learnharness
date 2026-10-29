@@ -34,6 +34,7 @@ import type { ModelRole } from "../../config.ts";
 import type { ChatSettings } from "./contracts/chat.ts";
 import type { SearchEngineId } from "./search.ts";
 import { isDictationLanguage, type DictationLanguage } from "./dictation.ts";
+import { isDictationProvider, type DictationProviderId } from "./dictation-provider.ts";
 
 /** The schema version this code understands. Bump ONLY for breaking shape
  *  changes (a field renamed/meaning changed); pure additions never bump. */
@@ -333,6 +334,8 @@ export interface GeneralSettings {
 /** One app-wide dictation preference, shared by every composer. */
 export interface DictationSettings {
 	language?: DictationLanguage;
+	/** Absent = not chosen: the resolver uses whichever dictation key exists. */
+	provider?: DictationProviderId;
 }
 
 /** Agent settings — everything about the non-conversation machinery. */
@@ -483,7 +486,7 @@ export interface UserSettings {
 export interface FactorySettings {
 	version: number;
 	general: Required<GeneralSettings>;
-	dictation: Required<DictationSettings>;
+	dictation: Required<Pick<DictationSettings, "language">>;
 	appearance: {
 		mode: "dark" | "light";
 		background: string | null;
@@ -798,10 +801,13 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 	}
 	if (r.dictation !== undefined) {
 		const raw = r.dictation;
-		out.dictation = raw !== null && typeof raw === "object" && !Array.isArray(raw) &&
-			isDictationLanguage((raw as Record<string, unknown>).language)
-			? { language: (raw as DictationSettings).language }
-			: {};
+		const dictation: DictationSettings = {};
+		if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+			const { language, provider } = raw as Record<string, unknown>;
+			if (isDictationLanguage(language)) dictation.language = language;
+			if (isDictationProvider(provider)) dictation.provider = provider;
+		}
+		out.dictation = dictation;
 	}
 	if (r.claudeCode !== undefined) {
 		const raw = r.claudeCode;

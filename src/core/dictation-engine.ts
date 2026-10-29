@@ -1,4 +1,5 @@
 import { deepgramListenUrl, type DictationLanguage } from "./dictation.ts";
+import type { DictationProviderId } from "./dictation-provider.ts";
 
 /** What one incoming socket message means to the dictation hook. */
 export type DictationParsed = {
@@ -51,3 +52,91 @@ export const deepgramEngine: DictationEngine = {
 	endOfStream: () => [JSON.stringify({ type: "CloseStream" })],
 	isFinishedClose: (code) => code === 1000,
 };
+
+/** One engine per dictation run, chosen by the provider the token route minted
+ *  for (an ElevenLabs engine carries run state, so never share one). */
+export function createDictationEngine(provider: DictationProviderId): DictationEngine {
+	return provider === "elevenlabs" ? createElevenLabsEngine() : deepgramEngine;
+}
+
+/** Browser-safe base64 of raw bytes (no Node Buffer in core). Chunked so a
+ *  large frame never overflows the argument limit of fromCharCode. */
+function base64(bytes: Uint8Array): string {
+	let binary = "";
+	for (let i = 0; i < bytes.length; i += 0x8000) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+	}
+	return btoa(binary);
+}
+
+const ELEVENLABS_ERRORS: Record<string, string> = {
+	auth_error: "ElevenLabs rejected the key",
+	quota_exceeded: "ElevenLabs quota exceeded",
+	rate_limited: "ElevenLabs rate limit reached",
+	commit_throttled: "ElevenLabs is throttling commits",
+	session_time_limit_exceeded: "ElevenLabs session time limit reached",
+	insufficient_audio_activity: "ElevenLabs heard no speech",
+	invalid_request: "ElevenLabs rejected the request",
+	input_error: "ElevenLabs could not read the audio",
+	chunk_size_exceeded: "ElevenLabs audio chunk too large",
+	transcriber_error: "ElevenLabs transcription failed",
+	error: "ElevenLabs transcription failed",
+	unaccepted_terms: "ElevenLabs terms are not accepted on this account",
+	queue_overflow: "ElevenLabs is overloaded",
+	resource_exhausted: "ElevenLabs is out of capacity",
+};
+
+/** The final commit's audio: 100 ms of 16 kHz linear16 silence. An empty
+ *  commit chunk is undocumented, so a real (silent) frame is the safer
+ *  carrier for `commit: true`. */
+const SILENCE_100MS = new Uint8Array(3200);
+
+/** ElevenLabs Scribe realtime: base64 JSON audio chunks, the token in the URL
+ *  query, VAD-committed phrases, and a client-side close — the server never
+ *  closes after the last commit. The run is finished when the commit we
+ *  request at Stop answers, so an engine is PER RUN (one fresh instance each
+ *  time the hook starts a dictation). */
+export function createElevenLabsEngine(): DictationEngine {
+	let commitRequested = false;
+	const chunk = (audio: Uint8Array, commit: boolean) =>
+		JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: base64(audio), commit, sample_rate: 16000 });
+	return {
+		socket(token) {
+			const params = new URLSearchParams({
+				token,
+				model_id: "scribe_v2_realtime",
+				audio_format: "pcm_16000",
+				commit_strategy: "vad",
+				vad_silence_threshold_secs: "0.3",
+			});
+			return { url: `wss://api.elevenlabs.io/v1/speech-to-text/realtime?${params}`, protocols: [] };
+		},
+		encodeFrame: (frame) => chunk(new Uint8Array(frame), false),
+		parseMessage(raw) {
+			let msg: any;
+			try {
+				msg = JSON.parse(raw);
+			} catch {
+				return { finals: [] };
+			}
+			const type: unknown = msg?.message_type;
+			if (type === "committed_transcript" || type === "committed_transcript_with_timestamps") {
+				const text: unknown = msg.text;
+				const finals = typeof text === "string" && text ? [text] : [];
+				return commitRequested ? { finals, finished: true } : { finals };
+			}
+			if (typeof type === "string" && type in ELEVENLABS_ERRORS) {
+				// The Stop commit carries silence when VAD already committed the
+				// last phrase: "nothing new to commit" means the run is complete.
+				if (commitRequested && type === "insufficient_audio_activity") return { finals: [], finished: true };
+				return { finals: [], error: ELEVENLABS_ERRORS[type] };
+			}
+			return { finals: [] };
+		},
+		endOfStream() {
+			commitRequested = true;
+			return [chunk(SILENCE_100MS, true)];
+		},
+		isFinishedClose: () => false,
+	};
+}
