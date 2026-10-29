@@ -236,6 +236,16 @@ Authentication for server-side calls uses the `xi-api-key` header.
 2. **Model picker: live list, v4 Turbo default.** The picker lists every model from `GET /v1/models` with `can_do_text_to_speech`, so new models appear without an app update. The default is `eleven_v4_turbo` when the list includes it, otherwise `eleven_flash_v2_5`, otherwise the first TTS-capable model. A saved model that is no longer listed falls back the same way, and the picker shows the model actually in use.
 3. **Output format: `mp3_44100_64`.** It's plenty for one speaking voice, works on every plan, and uses half the bandwidth and cache memory of the 128 kbps default. The ~50 MB cache holds about 1.7 hours of speech.
 
+### Live check results (2026-10-29, slice 1)
+
+These were run with the developer's own key from `.env.local`, created by the ElevenLabs CLI's `onboard connect`.
+
+- **Auto-detect works.** A realtime session with no `language_code` returned `language_code: null` in `session_started.config`. When fed French speech, it committed the exact French text: "Bonjour, je voudrais apprendre la physique quantique aujourd'hui." The language mapper therefore omits `language_code` for "Multilingual" and for unsupported languages, as planned.
+- **Server defaults to override.** Without overrides, the session defaults are `vad_silence_threshold_secs: 1.5`, `vad_threshold: 0.4` and `vad_commit_strategy: false`. The adapter must send `commit_strategy=vad` and `vad_silence_threshold_secs=0.3` explicitly.
+- **The CLI-created key has every capability the app needs.** It created a `realtime_scribe` token (200, `sutkn_…`), ran streaming STT, did TTS at `pcm_16000`, listed voices (`GET /v2/voices`: 21 premade voices) and listed models (`GET /v1/models`).
+- **TTS models the account lists**, with their `maximum_text_length_per_request`: `eleven_v4` (10000), `eleven_v4_turbo` (10000), `eleven_v3` (5000), `eleven_v3_conversational` (5000), `eleven_multilingual_v2` (10000), `eleven_flash_v2_5` (40000), `eleven_turbo_v2_5` (40000), `eleven_turbo_v2` (30000), `eleven_flash_v2` (30000). `eleven_v4_turbo` is available, so the planned default holds.
+- **Still open: the minimum scopes for token creation.** No key restricted to the four scopes has been tested yet. This only affects the wording of the key help text in slice 2, not any code path. Until it's tested, the help text names the four scopes and says token creation may need a broader key.
+
 ### Checks to run first during implementation
 
 These need a real ElevenLabs key, which the developer puts in `.env.local` themselves. Run them before building the parts that depend on them, and take the results back to the owner if they contradict the assumptions here.
