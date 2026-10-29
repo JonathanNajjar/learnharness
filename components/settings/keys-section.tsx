@@ -29,6 +29,7 @@ import {
 	CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW,
 	CUSTOM_MODEL_DEFAULT_MAX_TOKENS,
 	CUSTOM_PROVIDER,
+	keyRowTarget,
 	normalizeBaseUrl,
 	type AuthKeyStatus,
 	type CustomModel,
@@ -601,17 +602,18 @@ export function KeysSection({
 
 			{/* One ELEVENLABS_API_KEY value, rendered in BOTH the Dictation and Read
 			    aloud groups: both rows read the same status and save through the
-			    same keys route, so a save in either shows in both. Their testids
-			    differ; openRow is the shared key id, so a deep link unfolds both. */}
+			    same keys route, so a save in either shows in both. Each row unfolds
+			    on its own target (keyRowTarget), so a deep link lands in one group. */}
 			{(["Dictation", "Read aloud", "Search"] as const).map((label) => <SettingsGroup key={label} label={label} testid={`group-${label.toLowerCase().replace(" ", "-")}`}>
-				{toolRows.filter((status) => TOOL_GROUPS[label].includes(status.id)).map((status) => (
-					<KeyTableRow
+				{toolRows.filter((status) => TOOL_GROUPS[label].includes(status.id)).map((status) => {
+					const target = keyRowTarget(status.id, label === "Read aloud" ? "read-aloud" : undefined);
+					return <KeyTableRow
 						key={status.id}
 						label={status.info?.label ?? status.id}
 						docsUrl={status.info?.docsUrl}
 						status={status}
-						expanded={openRow === status.id}
-						onToggle={() => setOpenRow(openRow === status.id ? null : status.id)}
+						expanded={openRow === target}
+						onToggle={() => setOpenRow(openRow === target ? null : target)}
 						onSave={async (v) => {
 							const err = await saveKey(status.id, v);
 							if (!err) setOpenRow(null);
@@ -620,8 +622,8 @@ export function KeysSection({
 						onCancel={() => setOpenRow(null)}
 						onDelete={() => deleteKey(status.id)}
 						testid={label === "Read aloud" ? `key-${status.id.toLowerCase()}-read-aloud` : `key-${status.id.toLowerCase()}`}
-					/>
-				))}
+					/>;
+				})}
 				{label === "Dictation" && <>
 					<DictationLanguageSetting />
 					<p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">

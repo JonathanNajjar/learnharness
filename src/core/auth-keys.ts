@@ -62,6 +62,15 @@ export function isKnownAuthKey(id: string): boolean {
 	return AUTH_KEY_IDS.has(id);
 }
 
+/** A Settings → Keys deep-link target (the `row` of `open("keys", row)`).
+ *  A key rendered in more than one group (ELEVENLABS_API_KEY: Dictation and
+ *  Read aloud) gets one target per group, so a feature's keyless click
+ *  unfolds the row under that feature (owner, 2026-10-29). The bare key id
+ *  is the key's first group. */
+export function keyRowTarget(id: string, group?: "read-aloud"): string {
+	return group ? `${id}@${group}` : id;
+}
+
 /** One model-provider key row for the settings page's dropdown: which
  *  pi-ai provider, the env var its key rides in, and the human label
  *  (pi's own Provider.name). */

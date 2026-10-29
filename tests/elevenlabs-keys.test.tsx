@@ -10,7 +10,7 @@ import React, { act } from "react";
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { parseHTML } from "linkedom";
-import { AUTH_KEYS, maskKey, validateKeyShape, type AuthKeyStatus } from "../src/core/index.ts";
+import { AUTH_KEYS, keyRowTarget, maskKey, validateKeyShape, type AuthKeyStatus } from "../src/core/index.ts";
 
 const ID = "ELEVENLABS_API_KEY";
 const DICTATION_ROW = "key-elevenlabs_api_key";
@@ -140,8 +140,21 @@ test("each group's help names the ElevenLabs permissions, the caveat, and links 
 	assert.match(readAloudHint.textContent!, /read aloud/i);
 });
 
-test("a deep link to the key id unfolds the ElevenLabs row in both groups (one stored value)", async () => {
+test("a deep link to the key id unfolds only the Dictation group's ElevenLabs row", async () => {
 	await fixture(ID);
 	assert.ok(byTest(`${DICTATION_ROW}-editor`));
+	assert.equal(document.querySelector(`[data-testid="${READ_ALOUD_ROW}-editor"]`), null);
+});
+
+test("a deep link to the read-aloud target unfolds only the Read aloud group's ElevenLabs row", async () => {
+	await fixture(keyRowTarget(ID, "read-aloud"));
 	assert.ok(byTest(`${READ_ALOUD_ROW}-editor`));
+	assert.equal(document.querySelector(`[data-testid="${DICTATION_ROW}-editor"]`), null);
+});
+
+test("clicking one ElevenLabs row unfolds that row alone", async () => {
+	await fixture();
+	await click(byTest(`${READ_ALOUD_ROW}-row`));
+	assert.ok(byTest(`${READ_ALOUD_ROW}-editor`));
+	assert.equal(document.querySelector(`[data-testid="${DICTATION_ROW}-editor"]`), null);
 });
