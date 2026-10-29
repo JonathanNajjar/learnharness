@@ -30,6 +30,7 @@ import { dockStateKey } from "@/components/dock-state-key";
 import { clearOpeningPrompt, readOpeningPromptEntry, stashOpeningPrompt, OPENING_PROMPT_FAILURE } from "@/components/opening-prompt";
 import { forwardDockWheel, useDockHeight } from "@/components/dock-height";
 import { QueuedSteersBody, type QueuedSteerLine } from "@/components/queued-steers";
+import { ListenButton } from "@/components/read-aloud";
 import { DictationBar, finishDictation, joinDictation, useDictation } from "@/components/dictation";
 import { useFieldCycle } from "@/components/field-cycle";
 import { JobsContext } from "@/components/jobs-context";
@@ -1612,6 +1613,17 @@ export function Chat({
 												}
 											})}
 										</MessageContent>
+										{/* Read aloud (ElevenLabs voice slice 6): the assistant's TEXT
+										    parts only — never reasoning, tool cards or questions — and
+										    only once the message has settled (the newest one is still
+										    being written while the turn is busy). */}
+										{(() => {
+											if (mi === messages.length - 1 && busy) return null;
+											const spoken = m.parts
+												.flatMap((part) => (part.type === "text" && part.text?.trim() ? [part.text] : []))
+												.join("\n\n");
+											return spoken ? <ListenButton sourceId={m.id || `m-${mi}`} markdown={spoken} /> : null;
+										})()}
 									</Message>
 									)}
 								</Fragment>

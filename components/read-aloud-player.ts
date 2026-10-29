@@ -45,8 +45,8 @@ export interface ReadAloudSnapshot {
 /** The slice of HTMLAudioElement the player uses. */
 export interface AudioLike {
 	src: string;
-	onended: (() => void) | null;
-	onerror: (() => void) | null;
+	onended: ((event: Event) => unknown) | null;
+	onerror: ((event: Event | string) => unknown) | null;
 	play(): Promise<void>;
 	pause(): void;
 }
@@ -147,11 +147,12 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 
 	const playUrl = (url: string): Promise<void> =>
 		new Promise((resolve, reject) => {
-			audio ??= createAudio();
-			audio.onended = () => resolve();
-			audio.onerror = () => reject(new ReadAloudFailure("upstream", "Read aloud couldn't play the audio"));
-			audio.src = url;
-			audio.play().catch(() => reject(new ReadAloudFailure("upstream", "Read aloud couldn't play the audio")));
+			const element = (audio ??= createAudio());
+			const unplayable = () => reject(new ReadAloudFailure("upstream", "Read aloud couldn't play the audio"));
+			element.onended = () => resolve();
+			element.onerror = unplayable;
+			element.src = url;
+			element.play().catch(unplayable);
 		});
 
 	const run = async (id: number, sourceId: string, chunks: readonly string[], signal: AbortSignal) => {
