@@ -82,6 +82,26 @@ async function readCustomStatus(inspectKey = false): Promise<CustomStatus> {
  *  section can never drift from core/auth-keys.ts again. */
 const TOOL_IDS = AUTH_KEYS.map((k) => k.id) as readonly string[];
 
+/** Which curated tool keys each group shows. ELEVENLABS_API_KEY is in TWO
+ *  groups on purpose (one stored value, two entry points); every other key
+ *  is in exactly one. Search takes whatever neither voice group claims. */
+const TOOL_GROUPS: Record<"Dictation" | "Read aloud" | "Search", readonly string[]> = {
+	Dictation: ["DEEPGRAM_API_KEY", "ELEVENLABS_API_KEY"],
+	"Read aloud": ["ELEVENLABS_API_KEY"],
+	Search: TOOL_IDS.filter((id) => id !== "DEEPGRAM_API_KEY" && id !== "ELEVENLABS_API_KEY"),
+};
+
+function ElevenLabsConsoleLink() {
+	return (
+		<a
+			href="https://elevenlabs.io/app/settings/api-keys"
+			target="_blank"
+			rel="noreferrer"
+			className="underline underline-offset-2 hover:text-foreground"
+		>ElevenLabs API key</a>
+	);
+}
+
 /** The custom endpoint's synthetic Add-provider entry (offered only while unconfigured). */
 export const CUSTOM_PROVIDER_INFO: ProviderKeyInfo = {
 	id: CUSTOM_PROVIDER.id,
@@ -579,8 +599,12 @@ export function KeysSection({
 				<ClaudeCodeInstallationStatus />
 			</SettingsGroup>
 
-			{(["Dictation", "Search"] as const).map((label) => <SettingsGroup key={label} label={label} testid={label === "Dictation" ? "group-dictation" : "group-search"}>
-				{toolRows.filter((status) => label === "Dictation" ? status.id === "DEEPGRAM_API_KEY" : status.id !== "DEEPGRAM_API_KEY").map((status) => (
+			{/* One ELEVENLABS_API_KEY value, rendered in BOTH the Dictation and Read
+			    aloud groups: both rows read the same status and save through the
+			    same keys route, so a save in either shows in both. Their testids
+			    differ; openRow is the shared key id, so a deep link unfolds both. */}
+			{(["Dictation", "Read aloud", "Search"] as const).map((label) => <SettingsGroup key={label} label={label} testid={`group-${label.toLowerCase().replace(" ", "-")}`}>
+				{toolRows.filter((status) => TOOL_GROUPS[label].includes(status.id)).map((status) => (
 					<KeyTableRow
 						key={status.id}
 						label={status.info?.label ?? status.id}
@@ -595,7 +619,7 @@ export function KeysSection({
 						}}
 						onCancel={() => setOpenRow(null)}
 						onDelete={() => deleteKey(status.id)}
-						testid={`key-${status.id.toLowerCase()}`}
+						testid={label === "Read aloud" ? `key-${status.id.toLowerCase()}-read-aloud` : `key-${status.id.toLowerCase()}`}
 					/>
 				))}
 				{label === "Dictation" && <>
@@ -608,7 +632,15 @@ export function KeysSection({
 							className="underline underline-offset-2 hover:text-foreground"
 						>Deepgram API key</a> with the Member role or higher, then add it above.
 					</p>
+					<p data-testid="dictation-elevenlabs-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
+						For ElevenLabs dictation, create an <ElevenLabsConsoleLink /> with the speech_to_text, text_to_speech, voices_read and models_read permissions (one key serves dictation and read aloud). Creating the dictation token may need a broader key.
+					</p>
 				</>}
+				{label === "Read aloud" && (
+					<p data-testid="read-aloud-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
+						Read aloud needs an ElevenLabs key; Deepgram does not read aloud. Create an <ElevenLabsConsoleLink /> with the text_to_speech, voices_read and models_read permissions, plus speech_to_text if you also dictate with it. Creating the dictation token may need a broader key.
+					</p>
+				)}
 			</SettingsGroup>)}
 
 		</>
