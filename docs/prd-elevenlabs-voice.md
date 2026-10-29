@@ -142,6 +142,9 @@ Interface: play(source id, chunks), stop(), the current playing source id (subsc
 - Voice picker and model picker. The model list is live from the account, defaulting to v4 Turbo with a Flash v2.5 fallback. No speed control.
 - Dictation commits on pauses (VAD, 0.3 s) plus a final commit at Stop. Read-aloud audio is `mp3_44100_64`.
 - **Keyless deep links land in the matching group** (decided 2026-10-29, after slice 2): a dictation error opens the Dictation group's ElevenLabs row, and a read-aloud error opens the Read aloud group's row. Targets are built with the core helper `keyRowTarget(id, group?)`: the bare id means Dictation, and `keyRowTarget(id, "read-aloud")` means Read aloud. `open("keys", row)` keeps its signature. Clicking one ElevenLabs row unfolds only that row.
+- **Default voice: Alice** (`Xb7hH8MSUJpSbSDYk0k2`, premade "Clear, Engaging Educator"), used until the learner picks one (decided 2026-10-29).
+- **Spoken markers** name what was skipped: "Code shown on screen.", "Diagram shown on screen.", "Table shown on screen.", "Equation shown on screen." (2026-10-29).
+- **Chunking** (an internal tuning choice): split at paragraphs, then sentences. The first chunk is at most ~200 characters so speech starts fast, and later chunks at most ~1000. `/api/tts` rejects text over 2500 characters. Until slice 9 adds the live-list fallback, the route's default model is `eleven_v4_turbo`.
 - **Key wording signed off** (2026-10-29): the labels "Deepgram (dictation only)" and "ElevenLabs", with the description "Speech key for dictation and read aloud — one key for both". Each group's hint names the four permissions and warns that token creation may need a broader key. The Read aloud group sits between Dictation and Search.
 - The key box appears in both groups and edits one value.
 - Dictation always wins over playback.
