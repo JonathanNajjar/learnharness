@@ -60,6 +60,8 @@ export interface ReadAloudDeps {
 	revokeObjectURL?: (url: string) => void;
 	/** Text → audio bytes. Defaults to the /api/tts request; the cache seam. */
 	loadChunk?: (text: string, signal: AbortSignal) => Promise<Blob>;
+	/** Whether dictation is live (slice 7). Defaults to never. */
+	isDictationActive?: () => boolean;
 }
 
 export interface ReadAloudPlayer {
@@ -69,6 +71,8 @@ export interface ReadAloudPlayer {
 	/** Stop now. Idempotent. Leaves an error showing; the next play() clears it. */
 	stop(): void;
 	clearError(): void;
+	/** True while dictation is live: auto-read (slice 10) must not start playback then. */
+	dictationActive(): boolean;
 	getSnapshot(): ReadAloudSnapshot;
 	subscribe(listener: () => void): () => void;
 }
@@ -202,6 +206,7 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 			halt();
 			if (snapshot.sourceId !== null) set({ sourceId: null, error: snapshot.error });
 		},
+		dictationActive: () => deps.isDictationActive?.() ?? false,
 		clearError() {
 			if (snapshot.error !== null) set({ sourceId: snapshot.sourceId, error: null });
 		},

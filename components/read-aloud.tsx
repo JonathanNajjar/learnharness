@@ -5,6 +5,7 @@ import { SquareIcon, Volume2Icon } from "lucide-react";
 import { useSettingsDialog } from "@/components/settings/settings-dialog";
 import { Hint } from "@/components/ui/hint";
 import { createReadAloudPlayer, type ReadAloudPlayer, type ReadAloudSnapshot } from "@/components/read-aloud-player";
+import { isDictationActive, subscribeDictationActive } from "@/components/dictation-state";
 import { keyRowTarget, markdownToSpeechChunks } from "@/src/core";
 
 /**
@@ -21,8 +22,20 @@ let windowPlayer: ReadAloudPlayer | undefined;
 /** THE read-aloud player of this window: one audio element, one source at a
  *  time. Others (Esc, dictation, auto-read — later slices) call `.stop()` on it. */
 export function readAloudPlayer(): ReadAloudPlayer {
-	windowPlayer ??= createReadAloudPlayer();
+	if (!windowPlayer) {
+		windowPlayer = createReadAloudPlayer({ isDictationActive });
+		stopOnDictation(windowPlayer);
+	}
 	return windowPlayer;
+}
+
+/** Dictation wins (slice 7): the moment it goes live the player stops, before the
+ *  mic opens (dictation sets its flag first thing in start()). Nothing resumes
+ *  when it ends: only a click on Listen starts playback. Returns the unbind. */
+export function stopOnDictation(player: ReadAloudPlayer): () => void {
+	return subscribeDictationActive(() => {
+		if (isDictationActive()) player.stop();
+	});
 }
 
 const IDLE: ReadAloudSnapshot = { sourceId: null, error: null };
