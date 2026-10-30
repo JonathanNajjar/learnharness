@@ -282,3 +282,49 @@ test("without an ElevenLabs key the section links to Keys → Read aloud", async
 	assert(byTest("key-elevenlabs_api_key-read-aloud"), "the Read aloud group's ElevenLabs row exists");
 	assert.equal(byTest("key-elevenlabs_api_key-read-aloud")!.querySelector("input") !== null, true, "and it is unfolded");
 });
+
+const toggle = () => byTest("toggle-read-replies-aloud") as HTMLButtonElement;
+
+test("Read replies aloud is a toggle, off by default", async () => {
+	const state = await fixture();
+	assert.equal(byTest("row-read-aloud-auto")!.textContent!.includes("Read replies aloud"), true);
+	assert.equal(toggle().getAttribute("aria-checked"), "false");
+	assert.deepEqual(state.writes, []);
+});
+
+test("switching it on saves the whole section, keeping voice and model", async () => {
+	const state = await fixture({ readAloud: { voiceId: "clone1", modelId: "eleven_flash_v2_5" } });
+	await act(async () => { toggle().click(); });
+	await settle();
+	assert.deepEqual(state.writes, [{ voiceId: "clone1", modelId: "eleven_flash_v2_5", autoRead: true }]);
+	assert.equal(toggle().getAttribute("aria-checked"), "true");
+});
+
+test("a saved-on toggle shows on, and switching off saves false", async () => {
+	const state = await fixture({ readAloud: { autoRead: true } });
+	assert.equal(toggle().getAttribute("aria-checked"), "true");
+	await act(async () => { toggle().click(); });
+	await settle();
+	assert.deepEqual(state.writes, [{ autoRead: false }]);
+	assert.equal(toggle().getAttribute("aria-checked"), "false");
+});
+
+test("choosing a voice or a model keeps auto-read on", async () => {
+	const state = await fixture({ readAloud: { autoRead: true } });
+	await openVoices();
+	await act(async () => { byTest("read-aloud-voice-clone1")!.click(); });
+	await settle();
+	await choose("read-aloud-model", "eleven_flash_v2_5");
+	assert.deepEqual(state.writes, [
+		{ voiceId: "clone1", autoRead: true },
+		{ voiceId: "clone1", modelId: "eleven_flash_v2_5", autoRead: true },
+	]);
+});
+
+test("a failed toggle save keeps the previous state and says so", async () => {
+	await fixture({ failWrite: true });
+	await act(async () => { toggle().click(); });
+	await settle();
+	assert.equal(toggle().getAttribute("aria-checked"), "false");
+	assert(byTest("read-aloud-save-error")!.textContent!.includes("Could not save"));
+});

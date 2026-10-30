@@ -30,7 +30,11 @@ import { dockStateKey } from "@/components/dock-state-key";
 import { clearOpeningPrompt, readOpeningPromptEntry, stashOpeningPrompt, OPENING_PROMPT_FAILURE } from "@/components/opening-prompt";
 import { forwardDockWheel, useDockHeight } from "@/components/dock-height";
 import { QueuedSteersBody, type QueuedSteerLine } from "@/components/queued-steers";
-import { ListenButton } from "@/components/read-aloud";
+import { ListenButton, readAloudPlayer } from "@/components/read-aloud";
+import { createAutoRead, finalAssistantStop, listenSourceId, spokenText } from "@/components/auto-read";
+import { isDictationActive } from "@/components/dictation-state";
+import { useReadAloudSettings } from "@/components/read-aloud-preference";
+import { markdownToSpeechChunks } from "@/src/core";
 import { DictationBar, finishDictation, joinDictation, useDictation } from "@/components/dictation";
 import { useFieldCycle } from "@/components/field-cycle";
 import { JobsContext } from "@/components/jobs-context";
@@ -476,6 +480,28 @@ export function Chat({
 	useEffect(() => {
 		if (turnInFlight && (status === "submitted" || status === "streaming")) setTurnInFlight(false);
 	}, [status, turnInFlight]);
+
+	// Auto-read (ElevenLabs voice slice 10): the controller sees each render's
+	// busy -> idle edge and decides once whether that turn's final reply plays
+	// (components/auto-read.ts holds every rule). The newest play options are
+	// read at play time through the ref.
+	const readAloudSettings = useReadAloudSettings();
+	const autoReadOptionsRef = useRef({ voiceId: readAloudSettings.voiceId, modelId: readAloudSettings.modelId });
+	autoReadOptionsRef.current = { voiceId: readAloudSettings.voiceId, modelId: readAloudSettings.modelId };
+	const autoReadRef = useRef<ReturnType<typeof createAutoRead>>(null);
+	autoReadRef.current ??= createAutoRead({
+		play: (sourceId, markdown) => { void readAloudPlayer().play(sourceId, markdownToSpeechChunks(markdown), autoReadOptionsRef.current); },
+		dictating: isDictationActive,
+	});
+	useEffect(() => {
+		autoReadRef.current!.observe({
+			busy,
+			failed: status === "error" || error !== null,
+			enabled: readAloudSettings.loaded && readAloudSettings.autoRead,
+			finalStop: finalAssistantStop(nativeMessages),
+			messages,
+		});
+	}, [busy, status, error, messages, nativeMessages, readAloudSettings.loaded, readAloudSettings.autoRead]);
 
 	// Mid-session discovery (jobs poll, handoff watch): a server-side turn
 	// exists that none of our views holds — attach to it through the same
@@ -1619,10 +1645,8 @@ export function Chat({
 										    being written while the turn is busy). */}
 										{(() => {
 											if (mi === messages.length - 1 && busy) return null;
-											const spoken = m.parts
-												.flatMap((part) => (part.type === "text" && part.text?.trim() ? [part.text] : []))
-												.join("\n\n");
-											return spoken ? <ListenButton sourceId={m.id || `m-${mi}`} markdown={spoken} /> : null;
+											const spoken = spokenText(m.parts);
+											return spoken ? <ListenButton sourceId={listenSourceId(m, mi)} markdown={spoken} /> : null;
 										})()}
 									</Message>
 									)}

@@ -461,12 +461,13 @@ export interface CompactionSettings {
 }
 
 /** Read aloud (ElevenLabs voice slice 9): which voice and model speak. Absent =
- *  the default (Alice; the resolved model, see resolveTtsModel). Slice 10 adds
- *  `autoRead` here; a section PUT replaces the whole section, so every write
- *  carries all fields. */
+ *  the default (Alice; the resolved model, see resolveTtsModel). A section PUT
+ *  replaces the whole section, so every write carries all fields. */
 export interface ReadAloudSettings {
 	voiceId?: string;
 	modelId?: string;
+	/** Read each new reply aloud once it has finished (slice 10). Absent = off. */
+	autoRead?: boolean;
 }
 
 /** THE record. Every section optional (delta); unknown top-level keys are
@@ -824,9 +825,10 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 		const raw = r.readAloud;
 		const readAloud: ReadAloudSettings = {};
 		if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
-			const { voiceId, modelId } = raw as Record<string, unknown>;
+			const { voiceId, modelId, autoRead } = raw as Record<string, unknown>;
 			if (isPlainTtsId(voiceId)) readAloud.voiceId = voiceId;
 			if (isPlainTtsId(modelId)) readAloud.modelId = modelId;
+			if (typeof autoRead === "boolean") readAloud.autoRead = autoRead;
 		}
 		out.readAloud = readAloud;
 	}

@@ -407,8 +407,8 @@ export function parseDictationSettingsBody(body: unknown): SettingsBodyResult<Di
 	return { ok: true, settings };
 }
 
-/** readAloud: { voiceId?, modelId? } — plain provider ids (they land in a URL
- *  path / JSON body). Absent = the default. */
+/** readAloud: { voiceId?, modelId?, autoRead? } — plain provider ids (they land
+ *  in a URL path / JSON body) and the auto-read switch. Absent = the default. */
 export function parseReadAloudSettingsBody(body: unknown): SettingsBodyResult<ReadAloudSettings> {
 	const raw = asRecord(body);
 	if (!raw) return { ok: false, error: "Invalid JSON body" };
@@ -420,6 +420,10 @@ export function parseReadAloudSettingsBody(body: unknown): SettingsBodyResult<Re
 	if (raw.modelId !== undefined) {
 		if (!isPlainTtsId(raw.modelId)) return { ok: false, error: "modelId must be a plain model id" };
 		settings.modelId = raw.modelId;
+	}
+	if (raw.autoRead !== undefined) {
+		if (typeof raw.autoRead !== "boolean") return { ok: false, error: "autoRead must be a boolean" };
+		settings.autoRead = raw.autoRead;
 	}
 	return { ok: true, settings };
 }

@@ -28,22 +28,44 @@ describe("sanitizeUserSettings: readAloud", () => {
 
 	it("drops anything that is not a plain id, each field on its own", () => {
 		assert.deepEqual(sanitize({ voiceId: "../x", modelId: "eleven_v3" }), { modelId: "eleven_v3" });
-		assert.deepEqual(sanitize({ voiceId: 7, modelId: "a b" }), {});
+		assert.deepEqual(sanitize({ voiceId: 7, modelId: "a b", autoRead: "yes" }), {});
 		assert.deepEqual(sanitize({ voiceId: "" }), {});
 		for (const raw of [null, [], "nope", 3]) assert.deepEqual(sanitize(raw), {});
 	});
 });
 
+describe("readAloud.autoRead", () => {
+	const sanitize = (readAloud: unknown) => sanitizeUserSettings({ version: 1, readAloud })?.readAloud;
+
+	it("is kept when boolean and dropped otherwise", () => {
+		assert.deepEqual(sanitize({ autoRead: true }), { autoRead: true });
+		assert.deepEqual(sanitize({ voiceId: "abc", autoRead: false }), { voiceId: "abc", autoRead: false });
+		for (const autoRead of [1, "true", null, {}]) assert.deepEqual(sanitize({ autoRead }), {}, JSON.stringify(autoRead));
+	});
+
+	it("resolves to off by default and when invalid, on when saved on", () => {
+		assert.equal(resolveSettings(null).readAloud.autoRead, false);
+		assert.equal(resolveSettings({ version: 1, readAloud: {} }).readAloud.autoRead, false);
+		assert.equal(resolveSettings({ version: 1, readAloud: { autoRead: "on" } as never }).readAloud.autoRead, false);
+		assert.equal(resolveSettings({ version: 1, readAloud: { autoRead: true } }).readAloud.autoRead, true);
+	});
+
+	it("the body parser accepts a boolean and rejects anything else", () => {
+		assert.deepEqual(parseReadAloudSettingsBody({ autoRead: true }), { ok: true, settings: { autoRead: true } });
+		for (const autoRead of ["true", 1, null]) assert.equal(parseReadAloudSettingsBody({ autoRead }).ok, false, JSON.stringify(autoRead));
+	});
+});
+
 describe("readAloud resolution", () => {
 	it("absent means the default voice and an unchosen model", () => {
-		assert.deepEqual(resolveSettings(null).readAloud, { voiceId: DEFAULT_TTS_VOICE_ID, modelId: undefined });
-		assert.deepEqual(resolveSettings({ version: 1, readAloud: {} }).readAloud, { voiceId: DEFAULT_TTS_VOICE_ID, modelId: undefined });
+		assert.deepEqual(resolveSettings(null).readAloud, { voiceId: DEFAULT_TTS_VOICE_ID, modelId: undefined, autoRead: false });
+		assert.deepEqual(resolveSettings({ version: 1, readAloud: {} }).readAloud, { voiceId: DEFAULT_TTS_VOICE_ID, modelId: undefined, autoRead: false });
 	});
 
 	it("saved values win", () => {
 		assert.deepEqual(
 			resolveSettings({ version: 1, readAloud: { voiceId: "abc", modelId: "eleven_v3" } }).readAloud,
-			{ voiceId: "abc", modelId: "eleven_v3" },
+			{ voiceId: "abc", modelId: "eleven_v3", autoRead: false },
 		);
 	});
 });
