@@ -158,6 +158,7 @@ Interface: play(source id, chunks), stop(), the current playing source id (subsc
   - Collapsed teach checks are never auto-read; they are read only if revealed and Listen is pressed.
   - Server-started turns that finish while the learner watches ARE auto-read; turns already in flight at open are not.
   - Dock prompts read the question plus its `details`, never the options.
+- **Submitting an answer stops the question's read-aloud** (2026-10-29, after live testing): pressing Submit or Enter on a pending question stops its prompt's audio immediately, before any dictation flush. Other audio, such as a reply, keeps playing.
 - **Key wording signed off** (2026-10-29): the labels "Deepgram (dictation only)" and "ElevenLabs", with the description "Speech key for dictation and read aloud — one key for both". Each group's hint names the four permissions and warns that token creation may need a broader key. The Read aloud group sits between Dictation and Search.
 - The key box appears in both groups and edits one value.
 - Dictation always wins over playback.

@@ -161,6 +161,16 @@ test("no key: the keyless line deep-links to Settings", async () => {
 	assert.ok(byTest("settings-backdrop"), "Settings opened");
 });
 
+test("submitting an answer stops the question being read aloud", async () => {
+	const { player } = await fixture("quiz", quiz);
+	await click(byTest("listen-button"));
+	await settle();
+	assert.equal(player.getSnapshot().sourceId, "q-call-7", "the prompt is playing");
+	await click(document.querySelector<HTMLElement>('[role="radio"]'));
+	await act(async () => { document.querySelector("form")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); });
+	assert.equal(player.getSnapshot().sourceId, null, "submit silenced it");
+});
+
 test("while a teach check is collapsed its Listen button is hidden and inert; after the reveal it reads the prompt", async () => {
 	const { requested, render } = await fixture("quiz", quiz, AUDIO, "call-7", false);
 	const hidden = byTest("listen-button")!.closest("[inert]");

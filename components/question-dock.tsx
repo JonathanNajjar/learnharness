@@ -8,7 +8,7 @@ import { useEnterSubmits } from "@/components/enter-submits";
 import { PathInput } from "@/components/path-input";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import { cn } from "@/lib/utils";
-import { ListenButton } from "@/components/read-aloud";
+import { ListenButton, readAloudPlayer } from "@/components/read-aloud";
 import { questionSourceId } from "@/components/auto-read";
 import type { ReadAloudPlayer } from "@/components/read-aloud-player";
 import {
@@ -393,6 +393,10 @@ function QuestionDockForm({
 
 	const submit = () => {
 		if (!canSubmit || compactionRunning) return;
+		// Answering ends the question's read-aloud at once (owner 2026-10-29),
+		// before any dictation flush; other sources keep playing.
+		const reader = player ?? readAloudPlayer();
+		if (reader.getSnapshot().sourceId === questionSourceId(toolCallId)) reader.stop();
 		/* FINISH DICTATION FIRST (owner, 2026-10-01): Enter may arrive while
 		 * a run is live with reasoning still in Deepgram's hands. Stop the
 		 * run, let the last finals land in the target field, and only then
