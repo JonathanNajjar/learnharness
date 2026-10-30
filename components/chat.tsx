@@ -31,7 +31,7 @@ import { clearOpeningPrompt, readOpeningPromptEntry, stashOpeningPrompt, OPENING
 import { forwardDockWheel, useDockHeight } from "@/components/dock-height";
 import { QueuedSteersBody, type QueuedSteerLine } from "@/components/queued-steers";
 import { ListenButton, readAloudPlayer } from "@/components/read-aloud";
-import { createAutoRead, finalAssistantStop, listenSourceId, spokenText } from "@/components/auto-read";
+import { createAutoRead, finalAssistantStop, listenSourceId, pendingQuestionSource, spokenText } from "@/components/auto-read";
 import { isDictationActive } from "@/components/dictation-state";
 import { useReadAloudSettings } from "@/components/read-aloud-preference";
 import { markdownToSpeechChunks } from "@/src/core";
@@ -482,15 +482,15 @@ export function Chat({
 	}, [status, turnInFlight]);
 
 	// Auto-read (ElevenLabs voice slice 10): the controller sees each render's
-	// busy -> idle edge and decides once whether that turn's final reply plays
-	// (components/auto-read.ts holds every rule). The newest play options are
-	// read at play time through the ref.
+	// busy -> idle edge and decides once whether that turn's final reply plays, then
+	// (slice 11) a newly shown dock question's prompt after it (components/auto-read.ts
+	// holds every rule). The newest play options are read at play time through the ref.
 	const readAloudSettings = useReadAloudSettings();
 	const autoReadOptionsRef = useRef({ voiceId: readAloudSettings.voiceId, modelId: readAloudSettings.modelId });
 	autoReadOptionsRef.current = { voiceId: readAloudSettings.voiceId, modelId: readAloudSettings.modelId };
 	const autoReadRef = useRef<ReturnType<typeof createAutoRead>>(null);
 	autoReadRef.current ??= createAutoRead({
-		play: (sourceId, markdown) => { void readAloudPlayer().play(sourceId, markdownToSpeechChunks(markdown), autoReadOptionsRef.current); },
+		play: (sourceId, markdown) => readAloudPlayer().play(sourceId, markdownToSpeechChunks(markdown), autoReadOptionsRef.current),
 		dictating: isDictationActive,
 	});
 	useEffect(() => {
@@ -500,8 +500,9 @@ export function Chat({
 			enabled: readAloudSettings.loaded && readAloudSettings.autoRead,
 			finalStop: finalAssistantStop(nativeMessages),
 			messages,
+			question: pendingQuestionSource(pending),
 		});
-	}, [busy, status, error, messages, nativeMessages, readAloudSettings.loaded, readAloudSettings.autoRead]);
+	}, [busy, status, error, messages, nativeMessages, pending, readAloudSettings.loaded, readAloudSettings.autoRead]);
 
 	// Mid-session discovery (jobs poll, handoff watch): a server-side turn
 	// exists that none of our views holds — attach to it through the same

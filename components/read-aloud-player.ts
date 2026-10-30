@@ -77,8 +77,10 @@ export type ReadAloudRequestOptions = SpeechOptions;
 
 export interface ReadAloudPlayer {
 	/** Read `chunks` aloud as `sourceId`, stopping whatever played before.
-	 *  Resolves when the source finished, failed or was stopped. */
-	play(sourceId: string, chunks: readonly string[], options?: ReadAloudRequestOptions): Promise<void>;
+	 *  Resolves when the source finished, failed or was stopped: true only if
+	 *  it played to its end (auto-read queues a question's prompt on that, so
+	 *  a Stop, another source or a failure never lets the next one start). */
+	play(sourceId: string, chunks: readonly string[], options?: ReadAloudRequestOptions): Promise<boolean>;
 	/** Stop now. Idempotent. Leaves an error showing; the next play() clears it. */
 	stop(): void;
 	clearError(): void;
@@ -170,7 +172,7 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 			element.play().catch(unplayable);
 		});
 
-	const run = async (id: number, sourceId: string, chunks: readonly string[], signal: AbortSignal, requested?: ReadAloudRequestOptions) => {
+	const run = async (id: number, sourceId: string, chunks: readonly string[], signal: AbortSignal, requested?: ReadAloudRequestOptions): Promise<boolean> => {
 		// The play()'s own choice (slice 9) wins; else the player-level supplier.
 		const options = requested ?? deps.speech?.();
 		const loads: Promise<Blob>[] = [];
@@ -183,7 +185,7 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 			start(0);
 			for (let i = 0; i < chunks.length; i++) {
 				const blob = await loads[i]!;
-				if (id !== generation) return;
+				if (id !== generation) return false;
 				if (i + 1 < chunks.length) start(i + 1); // prefetch while this one plays
 				const url = createObjectURL(blob);
 				live.add(url);
@@ -192,15 +194,17 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 				} finally {
 					revoke(url);
 				}
-				if (id !== generation) return;
+				if (id !== generation) return false;
 			}
 			set({ sourceId: null, error: snapshot.error });
+			return true;
 		} catch (error) {
-			if (id !== generation) return; // stopped or superseded: not a failure
+			if (id !== generation) return false; // stopped or superseded: not a failure
 			halt();
 			const failure =
 				error instanceof ReadAloudFailure ? error : new ReadAloudFailure("upstream", "Read aloud failed");
 			set({ sourceId: null, error: { sourceId, kind: failure.kind, message: failure.message } });
+				return false;
 		}
 	};
 
@@ -209,7 +213,7 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 			halt();
 			if (chunks.length === 0) {
 				if (snapshot.sourceId !== null || snapshot.error !== null) set({ sourceId: null, error: null });
-				return Promise.resolve();
+				return Promise.resolve(true);
 			}
 			controller = new AbortController();
 			set({ sourceId, error: null });

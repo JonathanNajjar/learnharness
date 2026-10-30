@@ -10,15 +10,33 @@
  * never play. The verdict is taken once, at the end; a skipped reply (setting
  * off, aborted, failed, dictating, nothing to say) is never revisited.
  *
- * The slice 11 hook for dock questions is a second event fed into this same
- * controller; it is deliberately not built here.
+ * Dock questions (slice 11) ride the same controller. A question counts as
+ * new when it first appears during a turn this view watched (or in the very
+ * observation that ends it); one already pending at mount, restored with a
+ * reopened session or adopted from the server is "known" and never plays. Its
+ * prompt plays AFTER the turn's reply: the player reads one source at a time,
+ * so the controller queues it behind the reply's play() and starts it only if
+ * that source played to its end. A Stop, Esc, another Listen, a failure,
+ * dictation, the question being answered or a new turn all cancel it.
  */
+
+import { parseAskInput, parseExplainInput, parseQuizInput, questionPromptMarkdown } from "@/src/core";
 
 /** The slice of a projected view message the controller needs. */
 export interface AutoReadMessage {
 	id: string;
 	role: string;
 	parts: ReadonlyArray<{ type: string; text?: string }>;
+}
+
+/** The pending dock question, as the controller needs it. */
+export interface AutoReadQuestion {
+	/** Identifies this occurrence (a reused tool call id in a newer message is a new question). */
+	key: string;
+	/** The dock Listen button's source id (questionSourceId). */
+	sourceId: string;
+	/** The prompt, as markdown (questionPromptMarkdown). */
+	markdown: string;
 }
 
 export interface AutoReadObservation {
@@ -32,6 +50,8 @@ export interface AutoReadObservation {
 	finalStop: string | undefined;
 	/** The projected transcript, as rendered. */
 	messages: readonly AutoReadMessage[];
+	/** The pending dock question, if any. */
+	question?: AutoReadQuestion | null;
 }
 
 /** The text of a message the Listen button reads: its text parts only (never
@@ -47,6 +67,32 @@ export function listenSourceId(message: { id: string }, index: number): string {
 	return message.id || `m-${index}`;
 }
 
+/** The dock Listen button's source id for a question: never a message's id. */
+export function questionSourceId(toolCallId: string): string {
+	return `q-${toolCallId}`;
+}
+
+/** The dock's pending question as the controller sees it, parsed like the dock
+ *  parses it (probe/recall are the quiz/explain twins). null when there is none
+ *  or its input is malformed (the dock shows its fallback then). */
+export function pendingQuestionSource(
+	pending: { key: string; toolCallId: string; tool: string; input: unknown } | null,
+): AutoReadQuestion | null {
+	if (!pending) return null;
+	const parsed =
+		pending.tool === "quiz" || pending.tool === "probe"
+			? parseQuizInput(pending.input)
+			: pending.tool === "explain" || pending.tool === "recall"
+				? parseExplainInput(pending.input)
+				: parseAskInput(pending.input);
+	if (!parsed) return null;
+	return {
+		key: pending.key,
+		sourceId: questionSourceId(pending.toolCallId),
+		markdown: questionPromptMarkdown({ question: parsed.question, context: parsed.details }),
+	};
+}
+
 /** stopReason of the last assistant message in the native record. */
 export function finalAssistantStop(native: ReadonlyArray<{ role: string; stopReason?: string }>): string | undefined {
 	for (let i = native.length - 1; i >= 0; i--) {
@@ -59,9 +105,18 @@ export interface AutoRead {
 	observe(observation: AutoReadObservation): void;
 }
 
+interface QueuedRead {
+	sourceId: string;
+	markdown: string;
+	/** Set on a question: it only plays while that question is still pending. */
+	questionKey?: string;
+}
+
 export function createAutoRead({ play, dictating }: {
-	/** Start reading `markdown` as `sourceId` (the window player, in the app). */
-	play: (sourceId: string, markdown: string) => void;
+	/** Start reading `markdown` as `sourceId` (the window player, in the app).
+	 *  May return a promise that settles when the source ended: `false` means it
+	 *  was cut off or failed, and nothing queued behind it then plays. */
+	play: (sourceId: string, markdown: string) => Promise<boolean> | void;
 	dictating: () => boolean;
 }): AutoRead {
 	let seen = false;
@@ -70,6 +125,14 @@ export function createAutoRead({ play, dictating }: {
 	 *  for a turn the view did not see begin. */
 	let before: Map<string, string> | null = null;
 	const played = new Set<string>();
+	/** Every question occurrence this view has observed. */
+	const knownQuestions = new Set<string>();
+	/** The question that appeared during the turn in flight, awaiting its end. */
+	let freshQuestion: string | null = null;
+	/** The question pending right now. */
+	let currentQuestion: string | null = null;
+	/** Bumped when a turn begins: a prompt queued by an earlier one is stale. */
+	let epoch = 0;
 
 	const spokenById = (messages: readonly AutoReadMessage[]) => {
 		const map = new Map<string, string>();
@@ -77,12 +140,49 @@ export function createAutoRead({ play, dictating }: {
 		return map;
 	};
 
+	/** The final reply, if it has new text that was not played already. */
+	const replyToRead = (o: AutoReadObservation, start: Map<string, string>): QueuedRead | null => {
+		const index = o.messages.length - 1;
+		const last = o.messages[index];
+		if (!last || last.role !== "assistant") return null;
+		const sourceId = listenSourceId(last, index);
+		const spoken = spokenText(last.parts);
+		if (!spoken || played.has(sourceId) || start.get(sourceId) === spoken) return null;
+		return { sourceId, markdown: spoken };
+	};
+
+	/** Play in order; each step starts only if the one before it played to its end. */
+	const playInOrder = (queue: readonly QueuedRead[]) => {
+		const mine = epoch;
+		const step = (i: number) => {
+			const item = queue[i]!;
+			const result = play(item.sourceId, item.markdown);
+			const next = queue[i + 1];
+			if (!next) return;
+			void Promise.resolve(result).then((finished) => {
+				if (finished === false || epoch !== mine || dictating()) return;
+				if (next.questionKey !== undefined && next.questionKey !== currentQuestion) return;
+				step(i + 1);
+			}, () => {});
+		};
+		step(0);
+	};
+
 	return {
 		observe(o) {
+			const question = o.question ?? null;
+			const isNew = question !== null && !knownQuestions.has(question.key);
+			if (question) knownQuestions.add(question.key);
+			currentQuestion = question?.key ?? null;
 			if (o.busy) {
-				if (!wasBusy) before = seen ? spokenById(o.messages) : null;
+				if (!wasBusy) {
+					before = seen ? spokenById(o.messages) : null;
+					freshQuestion = null;
+					epoch++;
+				}
 				wasBusy = true;
 				seen = true;
+				if (isNew && before) freshQuestion = question.key;
 				return;
 			}
 			seen = true;
@@ -90,17 +190,20 @@ export function createAutoRead({ play, dictating }: {
 			wasBusy = false;
 			const start = before;
 			before = null;
+			if (isNew && start) freshQuestion = question.key;
+			const announce = question !== null && freshQuestion === question.key ? question : null;
+			freshQuestion = null;
 			if (!start || !o.enabled || o.failed) return;
 			if (o.finalStop === "error" || o.finalStop === "aborted") return;
 			if (dictating()) return;
-			const index = o.messages.length - 1;
-			const last = o.messages[index];
-			if (!last || last.role !== "assistant") return;
-			const sourceId = listenSourceId(last, index);
-			const spoken = spokenText(last.parts);
-			if (!spoken || played.has(sourceId) || start.get(sourceId) === spoken) return;
-			played.add(sourceId);
-			play(sourceId, spoken);
+			const queue: QueuedRead[] = [];
+			const reply = replyToRead(o, start);
+			if (reply) {
+				played.add(reply.sourceId);
+				queue.push(reply);
+			}
+			if (announce) queue.push({ sourceId: announce.sourceId, markdown: announce.markdown, questionKey: announce.key });
+			if (queue.length > 0) playInOrder(queue);
 		},
 	};
 }
