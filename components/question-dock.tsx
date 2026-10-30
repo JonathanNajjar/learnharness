@@ -163,7 +163,12 @@ export function QuestionDock({
 					}
 				/>
 			)}
-			<div className={expanded ? "dock-variant" : "invisible h-0 overflow-hidden"}>
+			<div
+				className={expanded ? "dock-variant" : "invisible h-0 overflow-hidden"}
+				// Hidden, not unmounted: inert keeps the collapsed form (and its Listen
+				// button, owner 2026-10-29) out of focus and click reach explicitly.
+				inert={!expanded}
+			>
 				<QuestionDockForm
 					toolName={toolName}
 					toolCallId={toolCallId}

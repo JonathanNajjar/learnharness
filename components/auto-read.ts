@@ -37,6 +37,11 @@ export interface AutoReadQuestion {
 	sourceId: string;
 	/** The prompt, as markdown (questionPromptMarkdown). */
 	markdown: string;
+	/** A teach-phase check still behind its "Check your understanding" reveal
+	 *  (owner 2026-10-29): reading it aloud would give away what the collapse
+	 *  hides, so it is known but never announced, and revealing it later does
+	 *  not change that (only the manual Listen button reads it then). */
+	collapsed?: boolean;
 }
 
 export interface AutoReadObservation {
@@ -91,6 +96,11 @@ export function pendingQuestionSource(
 		sourceId: questionSourceId(pending.toolCallId),
 		markdown: questionPromptMarkdown({ question: parsed.question, context: parsed.details }),
 	};
+}
+
+/** Marks the question as a still-collapsed teach check (see AutoReadQuestion.collapsed). */
+export function withCollapsed(question: AutoReadQuestion | null, collapsed: boolean): AutoReadQuestion | null {
+	return question && collapsed ? { ...question, collapsed: true } : question;
 }
 
 /** stopReason of the last assistant message in the native record. */
@@ -170,9 +180,11 @@ export function createAutoRead({ play, dictating }: {
 
 	return {
 		observe(o) {
-			const question = o.question ?? null;
+			// A collapsed check is recorded as known and otherwise treated as no
+			// question, so no later observation (revealed or not) can announce it.
+			const question = o.question && !o.question.collapsed ? o.question : null;
 			const isNew = question !== null && !knownQuestions.has(question.key);
-			if (question) knownQuestions.add(question.key);
+			if (o.question) knownQuestions.add(o.question.key);
 			currentQuestion = question?.key ?? null;
 			if (o.busy) {
 				if (!wasBusy) {

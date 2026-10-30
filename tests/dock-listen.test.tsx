@@ -35,6 +35,7 @@ async function fixture(
 	input: Input,
 	handler: (text: string) => Response = AUDIO,
 	toolCallId = "call-7",
+	startExpanded = true,
 ) {
 	const { window: win, document: doc } = parseHTML("<html><body><div id='root'></div></body></html>");
 	Object.assign(doc, { oninput: null });
@@ -81,18 +82,20 @@ async function fixture(
 	const { SettingsDialogProvider } = await import("../components/settings/settings-dialog.tsx");
 	const root = createRoot(doc.getElementById("root")!);
 	dispose = async () => { await act(async () => { player.stop(); root.unmount(); }); };
-	await act(async () => {
-		root.render(
-			<SettingsDialogProvider>
-				<QuestionDock
-					toolName={toolName} toolCallId={toolCallId} input={input as never}
-					expanded onExpand={() => {}} onSubmit={() => {}} dictationClaim={false} player={player}
-				/>
-			</SettingsDialogProvider>,
-		);
-	});
+	const render = (expanded: boolean) =>
+		act(async () => {
+			root.render(
+				<SettingsDialogProvider>
+					<QuestionDock
+						toolName={toolName} toolCallId={toolCallId} input={input as never}
+						expanded={expanded} reveal={!expanded} onExpand={() => {}} onSubmit={() => {}} dictationClaim={false} player={player}
+					/>
+				</SettingsDialogProvider>,
+			);
+		});
+	await render(startExpanded);
 	await settle();
-	return { requested, player };
+	return { requested, player, render };
 }
 
 afterEach(async () => { await dispose?.(); restore?.(); dispose = undefined; restore = undefined; });
@@ -156,4 +159,17 @@ test("no key: the keyless line deep-links to Settings", async () => {
 	await click(byTest("listen-keyless"));
 	await settle();
 	assert.ok(byTest("settings-backdrop"), "Settings opened");
+});
+
+test("while a teach check is collapsed its Listen button is hidden and inert; after the reveal it reads the prompt", async () => {
+	const { requested, render } = await fixture("quiz", quiz, AUDIO, "call-7", false);
+	const hidden = byTest("listen-button")!.closest("[inert]");
+	assert.ok(hidden, "the collapsed form (and its Listen button) is inert, so it can't be focused or clicked");
+	assert.ok(hidden.classList.contains("invisible"), "and invisible");
+	assert.ok(document.body.textContent?.includes("Check your understanding"), "the invitation is what shows");
+	await render(true);
+	assert.equal(byTest("listen-button")!.closest("[inert]"), null, "revealed: reachable");
+	await click(byTest("listen-button"));
+	await settle();
+	assert.deepEqual(requested, ["Which planet is closest to the sun?"]);
 });

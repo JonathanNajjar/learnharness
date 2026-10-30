@@ -328,4 +328,37 @@ describe("auto-read: a new question's prompt (slice 11)", () => {
 		await f.flush();
 		assert.deepEqual(f.ids(), ["a1", "q-k1", "a9", "q-k2"]);
 	});
+	it("a collapsed teach check plays the reply but never its prompt, and revealing it later does not either", async () => {
+		const f = sequenced();
+		const collapsed = { ...ask("k1"), collapsed: true };
+		const history = [user("u0"), reply("a0", "old")];
+		f.observe({ messages: history });
+		f.observe({ busy: true, messages: [...history, user("u1")] });
+		f.observe({ busy: true, question: collapsed, messages: [...history, user("u1"), reply("a1", "Here")] });
+		const messages = [...history, user("u1"), reply("a1", "Here is the check.")];
+		f.observe({ question: collapsed, messages });
+		f.ends[0]!(true);
+		await f.flush();
+		assert.deepEqual(f.ids(), ["a1"], "the reply plays, the hidden prompt does not");
+		f.observe({ question: ask("k1"), messages }); // revealed: no longer collapsed
+		await f.flush();
+		assert.deepEqual(f.ids(), ["a1"], "revealing never auto-plays it");
+	});
+
+	it("a collapsed check that arrives with no reply to play stays silent", () => {
+		const f = sequenced();
+		const history = [user("u0"), reply("a0", "old")];
+		f.observe({ messages: history });
+		f.observe({ busy: true, messages: [...history, user("u1")] });
+		f.observe({ question: { ...ask("k1"), collapsed: true }, messages: [...history, user("u1"), { id: "a1", role: "assistant", parts: [{ type: "tool-quiz" }] }] });
+		assert.deepEqual(f.played, []);
+	});
+
+	it("a question that is not collapsed still plays after the reply", async () => {
+		const f = sequenced();
+		turnWithQuestion(f);
+		f.ends[0]!(true);
+		await f.flush();
+		assert.deepEqual(f.ids(), ["a1", "q-k1"]);
+	});
 });

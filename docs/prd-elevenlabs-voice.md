@@ -154,6 +154,10 @@ Interface: play(source id, chunks), stop(), the current playing source id (subsc
   - The voice picker is a searchable menu (the dictation language picker's pattern), not a plain dropdown.
   - Tagalog (`tl`) dictates with ElevenLabs as Filipino (`fil`).
   - A live check confirmed realtime Scribe accepts two-letter codes (`language_code=fr` transcribed French exactly).
+- **Read-aloud owner decisions** (2026-10-29):
+  - Collapsed teach checks are never auto-read; they are read only if revealed and Listen is pressed.
+  - Server-started turns that finish while the learner watches ARE auto-read; turns already in flight at open are not.
+  - Dock prompts read the question plus its `details`, never the options.
 - **Key wording signed off** (2026-10-29): the labels "Deepgram (dictation only)" and "ElevenLabs", with the description "Speech key for dictation and read aloud — one key for both". Each group's hint names the four permissions and warns that token creation may need a broader key. The Read aloud group sits between Dictation and Search.
 - The key box appears in both groups and edits one value.
 - Dictation always wins over playback.
