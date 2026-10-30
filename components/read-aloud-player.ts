@@ -59,13 +59,19 @@ export interface ReadAloudDeps {
 	createObjectURL?: (blob: Blob) => string;
 	revokeObjectURL?: (url: string) => void;
 	/** Text → audio bytes. Defaults to the /api/tts request; the cache seam. */
-	loadChunk?: (text: string, signal: AbortSignal) => Promise<Blob>;
+	loadChunk?: (text: string, signal: AbortSignal, options?: ReadAloudRequestOptions) => Promise<Blob>;
+}
+
+/** Per-play request choices (slice 9). Absent = the server's default. */
+export interface ReadAloudRequestOptions {
+	voiceId?: string;
+	modelId?: string;
 }
 
 export interface ReadAloudPlayer {
 	/** Read `chunks` aloud as `sourceId`, stopping whatever played before.
 	 *  Resolves when the source finished, failed or was stopped. */
-	play(sourceId: string, chunks: readonly string[]): Promise<void>;
+	play(sourceId: string, chunks: readonly string[], options?: ReadAloudRequestOptions): Promise<void>;
 	/** Stop now. Idempotent. Leaves an error showing; the next play() clears it. */
 	stop(): void;
 	clearError(): void;
@@ -83,14 +89,14 @@ class ReadAloudFailure extends Error {
 }
 
 /** The /api/tts request for one chunk, errors mapped to keyless/upstream. */
-function tts(fetchFn: typeof fetch): (text: string, signal: AbortSignal) => Promise<Blob> {
-	return async (text, signal) => {
+function tts(fetchFn: typeof fetch): (text: string, signal: AbortSignal, options?: ReadAloudRequestOptions) => Promise<Blob> {
+	return async (text, signal, options) => {
 		let res: Response;
 		try {
 			res = await fetchFn("/api/tts", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ text }),
+				body: JSON.stringify({ text, voiceId: options?.voiceId, modelId: options?.modelId }),
 				signal,
 			});
 		} catch (error) {
@@ -155,10 +161,10 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 			element.play().catch(unplayable);
 		});
 
-	const run = async (id: number, sourceId: string, chunks: readonly string[], signal: AbortSignal) => {
+	const run = async (id: number, sourceId: string, chunks: readonly string[], signal: AbortSignal, options?: ReadAloudRequestOptions) => {
 		const loads: Promise<Blob>[] = [];
 		const start = (i: number) => {
-			const load = loadChunk(chunks[i]!, signal);
+			const load = loadChunk(chunks[i]!, signal, options);
 			load.catch(() => {}); // surfaced when its turn comes, never as an unhandled rejection
 			loads[i] = load;
 		};
@@ -188,7 +194,7 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 	};
 
 	return {
-		play(sourceId, chunks) {
+		play(sourceId, chunks, options) {
 			halt();
 			if (chunks.length === 0) {
 				if (snapshot.sourceId !== null || snapshot.error !== null) set({ sourceId: null, error: null });
@@ -196,7 +202,7 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 			}
 			controller = new AbortController();
 			set({ sourceId, error: null });
-			return run(generation, sourceId, chunks, controller.signal);
+			return run(generation, sourceId, chunks, controller.signal, options);
 		},
 		stop() {
 			halt();

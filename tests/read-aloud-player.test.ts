@@ -95,6 +95,31 @@ function harness() {
 /** Let promise continuations run. */
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+describe("request options", () => {
+	it("sends the voice and model with every chunk; absent options are not sent", async () => {
+		const bodies: Array<Record<string, unknown>> = [];
+		const player = createReadAloudPlayer({
+			fetch: (async (_url: string, init: RequestInit) => {
+				bodies.push(JSON.parse(init.body as string) as Record<string, unknown>);
+				return new Response("a", { status: 200 });
+			}) as unknown as typeof fetch,
+			createAudio: () => ({ src: "", onended: null, onerror: null, play: async () => {}, pause() {} }),
+			createObjectURL: () => "blob:x",
+			revokeObjectURL: () => {},
+		});
+		void player.play("m1", ["one"], { voiceId: "VoiceId123", modelId: "eleven_v3" });
+		await settle();
+		player.stop();
+		void player.play("m2", ["two"]);
+		await settle();
+		player.stop();
+		assert.deepEqual(bodies, [
+			{ text: "one", voiceId: "VoiceId123", modelId: "eleven_v3" },
+			{ text: "two" },
+		]);
+	});
+});
+
 describe("playing a source", () => {
 	it("requests the first chunk, then plays it and reports the source as playing", async () => {
 		const h = harness();
