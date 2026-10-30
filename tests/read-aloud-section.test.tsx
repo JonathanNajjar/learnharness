@@ -19,6 +19,25 @@ const byTest = (id: string) => document.querySelector<HTMLElement>(`[data-testid
 const select = (id: string) => byTest(id) as HTMLSelectElement;
 const options = (id: string) => [...select(id).querySelectorAll("option")].map((o) => o.textContent);
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+// The voice picker is the app's searchable menu (as the dictation language picker).
+const trigger = () => byTest("read-aloud-voice") as HTMLButtonElement;
+const voiceMenu = () => byTest("read-aloud-voice-menu");
+const voiceInput = () => byTest("read-aloud-voice-search") as HTMLInputElement;
+const voiceRows = () => [...document.querySelectorAll<HTMLElement>('[data-testid="read-aloud-voice-list"] button')];
+const openVoices = async () => { await act(async () => { trigger().click(); }); };
+async function key(element: HTMLElement, value: string) {
+	await act(async () => {
+		const event = new window.Event("keydown", { bubbles: true, cancelable: true });
+		Object.assign(event, { key: value });
+		element.dispatchEvent(event);
+	});
+}
+async function search(value: string) {
+	await act(async () => {
+		Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(voiceInput(), value);
+		voiceInput().dispatchEvent(new window.Event("input", { bubbles: true }));
+	});
+}
 
 const VOICES = [
 	{ id: "Xb7hH8MSUJpSbSDYk0k2", name: "Alice", category: "premade" },
@@ -40,8 +59,11 @@ async function fixture(setup: Setup = {}, standalone = false) {
 	const { window: win, document: doc } = parseHTML("<html><body><div id='root'></div></body></html>");
 	Object.assign(doc, { oninput: null });
 	Object.assign(win, { innerWidth: 1280, innerHeight: 900 });
-	win.HTMLElement.prototype.focus = function () {};
+	let active: Element = doc.body;
+	Object.defineProperty(doc, "activeElement", { get: () => active });
+	win.HTMLElement.prototype.focus = function () { active = this; };
 	win.HTMLElement.prototype.scrollIntoView = () => {};
+	win.HTMLElement.prototype.getBoundingClientRect = () => ({ top: 200, bottom: 230, left: 400, right: 500, width: 100, height: 30, x: 400, y: 200, toJSON() {} });
 	const state = {
 		record: { version: 1, ...(setup.readAloud ? { readAloud: setup.readAloud } : {}) } as UserSettings,
 		writes: [] as unknown[],
@@ -121,22 +143,37 @@ test("the section is in the dialog nav and says billing is separate", async () =
 	assert(note.includes("cost meter"));
 });
 
-test("the voice picker lists the account's voices with their category, cloned included", async () => {
+test("the voice menu lists the account's voices: name, with the category as quiet secondary text, cloned included", async () => {
 	await fixture();
-	assert.deepEqual(options("read-aloud-voice"), ["Alice (premade)", "My Voice (cloned)"]);
+	assert.equal(voiceMenu(), null, "closed until opened");
+	await openVoices();
+	assert.equal(document.activeElement, voiceInput());
+	assert.deepEqual(voiceRows().map((row) => row.querySelector(".text-card-foreground")!.textContent), ["Alice", "My Voice"]);
+	assert.deepEqual(voiceRows().map((row) => row.querySelector(".text-muted-foreground")!.textContent), ["premade", "cloned"]);
 });
 
-test("with nothing saved the pickers show Alice and the default model", async () => {
+test("with nothing saved the voice picker shows Alice and the model picker the default model", async () => {
 	await fixture();
-	assert.equal(select("read-aloud-voice").value, "Xb7hH8MSUJpSbSDYk0k2");
+	assert.match(trigger().textContent!, /Alice/);
 	assert.equal(select("read-aloud-model").value, "eleven_v4_turbo");
+	await openVoices();
+	assert.match(byTest("read-aloud-voice-Xb7hH8MSUJpSbSDYk0k2")!.className, /bg-muted\/60/, "Alice is the marked row");
 });
 
 test("the model picker lists only what the models route returned (TTS-capable) and shows a saved one", async () => {
 	await fixture({ readAloud: { modelId: "eleven_flash_v2_5", voiceId: "clone1" } });
 	assert.deepEqual(options("read-aloud-model"), ["Eleven v4 Turbo", "Eleven Flash v2.5"]);
 	assert.equal(select("read-aloud-model").value, "eleven_flash_v2_5");
-	assert.equal(select("read-aloud-voice").value, "clone1");
+	assert.match(trigger().textContent!, /My Voice/);
+});
+
+test("a saved voice that is no longer on the account shows Alice, the voice actually used, and writes nothing", async () => {
+	const state = await fixture({ readAloud: { voiceId: "removed-voice" } });
+	assert.match(trigger().textContent!, /Alice/);
+	assert.doesNotMatch(trigger().textContent!, /removed-voice|not on this account/);
+	await openVoices();
+	assert.match(byTest("read-aloud-voice-Xb7hH8MSUJpSbSDYk0k2")!.className, /bg-muted\/60/);
+	assert.deepEqual(state.writes, [], "showing the fallback never writes it back");
 });
 
 test("a saved model that is no longer listed shows the model actually used", async () => {
@@ -154,11 +191,53 @@ test("with v4 Turbo gone the picker shows Flash, then the first listed", async (
 	assert.equal(select("read-aloud-model").value, "eleven_v3");
 });
 
-test("choosing a voice saves the whole section, keeping the model", async () => {
+test("choosing a voice saves the whole section, keeping the model, and closes the menu", async () => {
 	const state = await fixture({ readAloud: { modelId: "eleven_flash_v2_5" } });
-	await choose("read-aloud-voice", "clone1");
+	await openVoices();
+	await act(async () => { byTest("read-aloud-voice-clone1")!.click(); });
+	await settle();
 	assert.deepEqual(state.writes, [{ voiceId: "clone1", modelId: "eleven_flash_v2_5" }]);
-	assert.equal(select("read-aloud-voice").value, "clone1");
+	assert.match(trigger().textContent!, /My Voice/);
+	assert.equal(voiceMenu(), null);
+	assert.equal(document.activeElement, trigger());
+});
+
+test("searching filters voices by name and by category", async () => {
+	await fixture();
+	await openVoices();
+	await search("my vo");
+	assert.deepEqual(voiceRows().map((row) => row.getAttribute("data-testid")), ["read-aloud-voice-clone1"]);
+	await search("premade");
+	assert.deepEqual(voiceRows().map((row) => row.getAttribute("data-testid")), ["read-aloud-voice-Xb7hH8MSUJpSbSDYk0k2"]);
+	await search("zzzz");
+	assert.equal(voiceRows().length, 0);
+	assert.match(voiceMenu()!.textContent!, /No voices match/);
+});
+
+test("arrow keys walk the results and Enter chooses; Enter on no results saves nothing", async () => {
+	const state = await fixture();
+	await openVoices();
+	await key(voiceInput(), "ArrowDown");
+	await key(voiceInput(), "ArrowDown");
+	await key(voiceInput(), "Enter");
+	await settle();
+	assert.deepEqual(state.writes, [{ voiceId: "clone1" }]);
+	assert.equal(voiceMenu(), null);
+	await openVoices();
+	await search("zzzz");
+	await key(voiceInput(), "Enter");
+	assert.equal(state.writes.length, 1);
+});
+
+test("Escape closes only the voice menu, returning focus to its trigger", async () => {
+	await fixture();
+	let outer = 0;
+	document.addEventListener("keydown", (event) => { if ((event as KeyboardEvent).key === "Escape") outer++; });
+	await openVoices();
+	await key(voiceInput(), "Escape");
+	assert.equal(voiceMenu(), null);
+	assert.equal(outer, 0, "the dialog's own Escape did not run");
+	assert.equal(document.activeElement, trigger());
 });
 
 test("choosing a model saves the whole section, keeping the voice", async () => {
@@ -168,11 +247,14 @@ test("choosing a model saves the whole section, keeping the voice", async () => 
 	assert.equal(select("read-aloud-model").value, "eleven_flash_v2_5");
 });
 
-test("a failed save keeps the previous value and says so", async () => {
+test("a failed save keeps the previous voice and says so", async () => {
 	await fixture({ failWrite: true });
-	await choose("read-aloud-voice", "clone1");
-	assert.equal(select("read-aloud-voice").value, "Xb7hH8MSUJpSbSDYk0k2");
+	await openVoices();
+	await act(async () => { byTest("read-aloud-voice-clone1")!.click(); });
+	await settle();
+	assert.match(trigger().textContent!, /Alice/);
 	assert(byTest("read-aloud-save-error")!.textContent!.includes("Could not save"));
+	assert(voiceMenu()!.querySelector('[role="alert"]'), "the open menu shows it too");
 });
 
 test("a list that cannot load shows a clear line, not a stale or fake list", async () => {

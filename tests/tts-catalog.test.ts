@@ -210,3 +210,66 @@ describe("speak() uses the resolved model", () => {
 		assert.deepEqual(a.spoken, ["eleven_v3", "eleven_v4_turbo"]);
 	});
 });
+
+describe("speak() uses the resolved voice", () => {
+	const ALICE = "Xb7hH8MSUJpSbSDYk0k2";
+	const audio = () => new Response(new Uint8Array([1, 2]), { status: 200 });
+	const page = (...ids: string[]) => ({ voices: ids.map((voice_id) => ({ voice_id, name: voice_id, category: "premade" })), has_more: false });
+
+	/** A fake serving `voicePages` by token (or failing when undefined), recording the voice each TTS call used. */
+	function setup(voicePages: Record<string, unknown> | undefined) {
+		const spoken: string[] = [];
+		const counts = { voices: 0 };
+		const { fetchFn } = fake((url) => {
+			if (url.pathname === "/v1/models") return new Response("down", { status: 500 });
+			if (url.pathname === "/v2/voices") {
+				counts.voices++;
+				if (voicePages === undefined) return new Response("down", { status: 500 });
+				return Response.json(voicePages[url.searchParams.get("next_page_token") ?? ""]);
+			}
+			spoken.push(url.pathname.split("/")[3]!);
+			return audio();
+		});
+		return { spoken, counts, deps: { fetchFn, getKey } };
+	}
+
+	it("keeps a saved voice the account lists, wherever it sits in the pages", async () => {
+		const { spoken, deps } = setup({
+			"": { ...page("a", ALICE), has_more: true, next_page_token: "t2" },
+			t2: page("clone1"),
+		});
+		await speak({ text: "Hi.", voiceId: "clone1" }, deps);
+		assert.deepEqual(spoken, ["clone1"]);
+	});
+
+	it("falls back to Alice when the saved voice is not on the account", async () => {
+		const { spoken, deps } = setup({ "": page(ALICE, "clone1") });
+		await speak({ text: "Hi.", voiceId: "gone" }, deps);
+		assert.deepEqual(spoken, [ALICE]);
+	});
+
+	it("an unavailable voice list still plays the saved voice, else Alice", async () => {
+		const { spoken, deps } = setup(undefined);
+		await speak({ text: "Hi.", voiceId: "clone1" }, deps);
+		await speak({ text: "Hi." }, deps);
+		assert.deepEqual(spoken, ["clone1", ALICE]);
+	});
+
+	it("looks the list up once per cache window; a failure is retried, not cached", async () => {
+		let t = 1_000_000;
+		const ok = setup({ "": page(ALICE) });
+		const deps = { ...ok.deps, now: () => t };
+		await speak({ text: "Hi." }, deps);
+		await speak({ text: "Hi." }, deps);
+		assert.equal(ok.counts.voices, 1, "second speak reuses the cached list");
+		t += TTS_MODELS_CACHE_MS + 1;
+		await speak({ text: "Hi." }, deps);
+		assert.equal(ok.counts.voices, 2, "expired list is fetched again");
+
+		clearTtsModelsCache();
+		const down = setup(undefined);
+		await speak({ text: "Hi." }, down.deps);
+		await speak({ text: "Hi." }, down.deps);
+		assert.equal(down.counts.voices, 2, "failures are not cached");
+	});
+});

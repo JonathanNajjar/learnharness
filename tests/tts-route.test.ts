@@ -50,7 +50,8 @@ function upstream(respond: () => Response): Upstream[] {
 	globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 		// The model-list lookup (slice 9) is not a speech call; its answer here
 		// is unusable on purpose (the model falls back to what was asked for).
-		if (String(url).includes("/v1/models")) return new Response("{}", { status: 404 });
+		// Likewise the voice-list lookup: unusable, so the asked-for voice plays.
+		if (String(url).includes("/v1/models") || String(url).includes("/v2/voices")) return new Response("{}", { status: 404 });
 		calls.push({ url: String(url), init: init ?? {} });
 		return respond();
 	}) as typeof fetch;

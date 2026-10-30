@@ -22,6 +22,11 @@
  * memory for TTS_MODELS_CACHE_MS. speak() resolves its model against that
  * list (resolveTtsModel), so playback always uses a model that exists; when
  * the list is unavailable it trusts the requested model, else the default.
+ * The voice resolves the same way (resolveTtsVoice) against a voice-id list
+ * cached just like the models: a saved voice that left the account plays as
+ * Alice. Cost bound: one full paginated listing per key per cache window
+ * (ids only), each page under the catalog timeout, run in parallel with the
+ * model lookup; a failure is not cached and never blocks playback.
  */
 
 import {
@@ -29,6 +34,7 @@ import {
 	DEFAULT_TTS_VOICE_ID,
 	isPlainTtsId,
 	resolveTtsModel,
+	resolveTtsVoice,
 	type TtsModel,
 	type TtsVoice,
 } from "../core/read-aloud.ts";
@@ -231,9 +237,10 @@ async function getJson(
 
 let modelsCache: { key: string; at: number; models: TtsModel[] } | undefined;
 
-/** Forget the cached model list (tests). */
+/** Forget the cached model and voice lists (tests). */
 export function clearTtsModelsCache(): void {
 	modelsCache = undefined;
+	voicesCache = undefined;
 }
 
 /** The TTS-capable models, cached per key for TTS_MODELS_CACHE_MS. Throws UpstreamFailure. */
@@ -245,21 +252,40 @@ async function fetchTtsModels(provider: TtsProvider, key: string, deps: CatalogD
 	return models;
 }
 
-/** GET /api/tts/voices: every voice on the account, cloned ones included → `[{ id, name, category }]`. */
+let voicesCache: { key: string; at: number; ids: string[] } | undefined;
+
+/** Every voice on the account, following the page token. Throws UpstreamFailure. */
+async function fetchAllVoices(provider: TtsProvider, key: string, fetchFn: FetchLike): Promise<TtsVoice[]> {
+	const voices: TtsVoice[] = [];
+	let pageToken: string | undefined;
+	for (let page = 0; page < MAX_VOICE_PAGES; page++) {
+		const parsed = provider.parseVoices(await getJson(provider, key, fetchFn, provider.voicesRequest({ key, pageToken })));
+		voices.push(...parsed.voices);
+		if (!parsed.next || parsed.next === pageToken) break;
+		pageToken = parsed.next;
+	}
+	return voices;
+}
+
+/** The account's voice ids for speak(), cached per key for TTS_MODELS_CACHE_MS
+ *  (only ids are kept; failures are never cached). Throws UpstreamFailure. */
+async function fetchVoiceIds(provider: TtsProvider, key: string, deps: CatalogDeps): Promise<string[]> {
+	const now = (deps.now ?? Date.now)();
+	if (voicesCache && voicesCache.key === key && now - voicesCache.at < TTS_MODELS_CACHE_MS) return voicesCache.ids;
+	const ids = (await fetchAllVoices(provider, key, deps.fetchFn ?? defaultFetch)).map((v) => v.id);
+	voicesCache = { key, at: now, ids };
+	return ids;
+}
+
+/** GET /api/tts/voices: every voice on the account, cloned ones included → `[{ id, name, category }]`.
+ *  Always fresh (so a new clone shows at once); the answer also refreshes speak()'s cache. */
 export async function listTtsVoices(deps: CatalogDeps = {}): Promise<Response> {
 	const provider = resolveTtsProvider();
 	const key = (deps.getKey ?? keyValue)(provider.keyId);
 	if (!key) return keylessResponse(provider);
-	const fetchFn = deps.fetchFn ?? defaultFetch;
 	try {
-		const voices: TtsVoice[] = [];
-		let pageToken: string | undefined;
-		for (let page = 0; page < MAX_VOICE_PAGES; page++) {
-			const parsed = provider.parseVoices(await getJson(provider, key, fetchFn, provider.voicesRequest({ key, pageToken })));
-			voices.push(...parsed.voices);
-			if (!parsed.next || parsed.next === pageToken) break;
-			pageToken = parsed.next;
-		}
+		const voices = await fetchAllVoices(provider, key, deps.fetchFn ?? defaultFetch);
+		voicesCache = { key, at: (deps.now ?? Date.now)(), ids: voices.map((v) => v.id) };
 		return Response.json(voices, { headers: { "Cache-Control": "no-store" } });
 	} catch (error) {
 		return upstreamResponse(error);
@@ -290,18 +316,19 @@ export async function speak(body: unknown, deps: CatalogDeps = {}): Promise<Resp
 	const key = (deps.getKey ?? keyValue)(provider.keyId);
 	if (!key) return keylessResponse(provider);
 
-	// The model actually used: the request's if the account lists it, else the
-	// default/fallback. An unavailable list never blocks playback.
-	const listed = await fetchTtsModels(provider, key, deps).catch(() => [] as TtsModel[]);
-	const resolvedModel = resolveTtsModel(modelId as string | undefined, listed.map((m) => m.id));
+	// The model and voice actually used: the request's if the account lists it,
+	// else the default/fallback. An unavailable list never blocks playback. The
+	// two lookups run together (each cached), so a cold or stalled cache adds at
+	// most one CATALOG_TIMEOUT_MS per cache window, not two in series.
+	const [listedModels, listedVoiceIds] = await Promise.all([
+		fetchTtsModels(provider, key, deps).then((models) => models.map((m) => m.id), () => [] as string[]),
+		fetchVoiceIds(provider, key, deps).catch(() => [] as string[]),
+	]);
+	const resolvedModel = resolveTtsModel(modelId as string | undefined, listedModels);
+	const resolvedVoice = resolveTtsVoice(voiceId as string | undefined, listedVoiceIds);
 
 	const fetchFn = deps.fetchFn ?? defaultFetch;
-	const { url, init } = provider.request({
-		key,
-		text,
-		voiceId: (voiceId as string | undefined) ?? provider.defaultVoiceId,
-		modelId: resolvedModel,
-	});
+	const { url, init } = provider.request({ key, text, voiceId: resolvedVoice, modelId: resolvedModel });
 	let upstream: Response;
 	try {
 		upstream = await fetchFn(url, init);
