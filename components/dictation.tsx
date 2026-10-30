@@ -106,6 +106,11 @@ export const METER_TICK_MS = 60;
 /** Rolling history: 48 cells × 60ms ≈ 2.9s of recent loudness. */
 export const METER_CELLS = 48;
 
+/** After Stop, how long the stream must stay quiet (since the last message
+ *  following a settling one) before the run finalizes. The 3 s safety net
+ *  still caps the whole stop. */
+export const STOP_QUIET_MS = 400;
+
 /** The Deepgram key's id in the keys store (the env-var name — the Keys
  *  section's openRow state and the PUT /api/keys/:id seam). */
 export const DEEPGRAM_KEY_ID = "DEEPGRAM_API_KEY";
@@ -341,6 +346,10 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 	const pendingRef = useRef<ArrayBuffer[]>([]);
 	const genRef = useRef(0); // stale-handler guard (dictate pattern)
 	const safetyRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	/** The post-Stop quiet timer (engines that report `settles`): armed by a
+	 *  settling message, restarted by any message after it, finalizes the run
+	 *  when it fires. */
+	const quietRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const reconnectsRef = useRef(0);
 	/** The deferred transcript (owner round 2): finals land here during the
 	 *  run and flush into the primary input once, at teardown. */
@@ -371,6 +380,10 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		if (safetyRef.current) {
 			clearTimeout(safetyRef.current);
 			safetyRef.current = null;
+		}
+		if (quietRef.current) {
+			clearTimeout(quietRef.current);
+			quietRef.current = null;
 		}
 		pendingRef.current = [];
 		for (const track of streamRef.current?.getTracks() ?? []) track.stop();
@@ -426,10 +439,16 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 				if (parsed.error) {
 					setError(parsed.error);
 					cleanup();
-				} else if (parsed.finished) {
-					// The engine says the stream is done without a server close
-					// (cleanup closes the socket ourselves).
-					cleanup();
+				} else if (parsed.settles || quietRef.current) {
+					// The engine has no server close to wait for (ElevenLabs): a
+					// settling message (a commit, or "no new audio", after Stop)
+					// starts the quiet window, and ANY later message restarts it —
+					// a late VAD commit of an earlier phrase can precede the Stop
+					// commit. When it fires, finalize (cleanup closes the socket).
+					if (quietRef.current) clearTimeout(quietRef.current);
+					quietRef.current = setTimeout(() => {
+						if (gen === genRef.current) cleanup();
+					}, STOP_QUIET_MS);
 				}
 			});
 			ws.addEventListener("close", (ev) => {

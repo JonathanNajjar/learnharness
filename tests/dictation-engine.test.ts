@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { deepgramListenUrl } from "../src/core/dictation.ts";
-import { createDictationEngine, createElevenLabsEngine, deepgramEngine } from "../src/core/dictation-engine.ts";
+import { createDictationEngine, createElevenLabsEngine, deepgramEngine, type DictationEngine } from "../src/core/dictation-engine.ts";
 
 describe("Deepgram dictation engine adapter", () => {
 	it("builds today's socket: listen URL plus the bearer subprotocol carrying the token", () => {
@@ -45,14 +45,14 @@ describe("Deepgram dictation engine adapter", () => {
 
 	it("never marks a message as finishing the stream (the close does that)", () => {
 		const raw = JSON.stringify({ type: "Results", is_final: true, channel: { alternatives: [{ transcript: "x" }] } });
-		assert.notEqual(deepgramEngine.parseMessage(raw).finished, true);
+		assert.notEqual(deepgramEngine.parseMessage(raw).settles, true);
 	});
 });
 
 describe("ElevenLabs dictation engine adapter", () => {
 	const msg = (o: object) => JSON.stringify(o);
 
-	it("opens the realtime socket with the token in the query, VAD commits at 0.3 s, no subprotocols and no language", () => {
+	it("opens the realtime socket with the token in the query, VAD commits at 0.3 s, the language code and no subprotocols", () => {
 		const { url, protocols } = createElevenLabsEngine().socket("sutkn_1", "pl");
 		const u = new URL(url);
 		assert.equal(`${u.origin}${u.pathname}`, "wss://api.elevenlabs.io/v1/speech-to-text/realtime");
@@ -62,8 +62,22 @@ describe("ElevenLabs dictation engine adapter", () => {
 			audio_format: "pcm_16000",
 			commit_strategy: "vad",
 			vad_silence_threshold_secs: "0.3",
+			language_code: "pl",
 		});
 		assert.deepEqual(protocols, []);
+	});
+
+	it("sends the base language for a regional choice, yue for zh-HK, and omits language_code for multi and unsupported languages", () => {
+		const code = (language: Parameters<DictationEngine["socket"]>[1]) =>
+			new URL(createElevenLabsEngine().socket("t", language).url).searchParams.get("language_code");
+		assert.equal(code("en-GB"), "en");
+		assert.equal(code("zh-HK"), "yue");
+		assert.equal(code("multi"), null);
+		assert.equal(code("tl"), null);
+	});
+
+	it("leaves Deepgram's URL language handling alone", () => {
+		assert.equal(new URL(deepgramEngine.socket("t", "en-GB").url).searchParams.get("language"), "en-GB");
 	});
 
 	it("encodes a PCM frame as a base64 input_audio_chunk", () => {
@@ -120,7 +134,7 @@ describe("ElevenLabs dictation engine adapter", () => {
 		assert.match(e.parseMessage(msg({ message_type: "auth_error", error: "x" })).error!, /key/i);
 	});
 
-	it("ends the stream with one silent committing chunk, and the next commit then finishes the run", () => {
+	it("ends the stream with one silent committing chunk, and any commit after it settles (never finishes) the run", () => {
 		const e = createElevenLabsEngine();
 		assert.deepEqual(e.parseMessage(msg({ message_type: "committed_transcript", text: "mid-run" })), { finals: ["mid-run"] });
 		const [end, ...rest] = e.endOfStream();
@@ -132,7 +146,7 @@ describe("ElevenLabs dictation engine adapter", () => {
 		assert.ok(chunk.audio_base_64.length > 0);
 		assert.match(atob(chunk.audio_base_64), /^\0+$/, "silence, not speech");
 		assert.deepEqual(e.parseMessage(msg({ message_type: "committed_transcript", text: "last words" })), {
-			finals: ["last words"], finished: true,
+			finals: ["last words"], settles: true,
 		});
 	});
 
@@ -140,13 +154,13 @@ describe("ElevenLabs dictation engine adapter", () => {
 		const a = createElevenLabsEngine();
 		a.endOfStream();
 		const b = createElevenLabsEngine();
-		assert.notEqual(b.parseMessage(msg({ message_type: "committed_transcript", text: "x" })).finished, true);
+		assert.notEqual(b.parseMessage(msg({ message_type: "committed_transcript", text: "x" })).settles, true);
 	});
 
 	it("after Stop, a silent commit that finds nothing new ends the run cleanly rather than as an error", () => {
 		const e = createElevenLabsEngine();
 		e.endOfStream();
-		assert.deepEqual(e.parseMessage(msg({ message_type: "insufficient_audio_activity", error: "none" })), { finals: [], finished: true });
+		assert.deepEqual(e.parseMessage(msg({ message_type: "insufficient_audio_activity", error: "none" })), { finals: [], settles: true });
 	});
 
 	it("createDictationEngine picks the engine per provider, a fresh ElevenLabs engine each run", () => {

@@ -2,7 +2,7 @@ import React, { act } from "react";
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { parseHTML } from "linkedom";
-import { useDictation, type Dictation } from "../components/dictation.tsx";
+import { STOP_QUIET_MS, useDictation, type Dictation } from "../components/dictation.tsx";
 import { notifySettingsSaved } from "../components/settings-signal.ts";
 import { useDictationLanguage } from "../components/dictation-preference.ts";
 import { isDictationActive, useDictationActive } from "../components/dictation-state.ts";
@@ -340,7 +340,8 @@ test("microphone permission resolving after unmount immediately stops the late s
 const frame = (...bytes: number[]) => new Uint8Array(bytes).buffer;
 const sendFrame = (buffer: ArrayBuffer) => Worklet.last!.port.onmessage!({ data: { type: "audio", buffer } });
 
-test("ElevenLabs: queued frames flush as JSON on open, finals defer, Stop commits and the final commit lands the text and closes the socket", async () => {
+test("ElevenLabs: queued frames flush as JSON on open, finals defer, Stop commits and the quiet window after the Stop commit lands the text and closes the socket", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const f = await fixture();
 	f.state.token = { provider: "elevenlabs" };
 	await f.mount();
@@ -363,9 +364,83 @@ test("ElevenLabs: queued frames flush as JSON on open, finals defer, Stop commit
 	assert.equal(f.dictation.phase, "stopping");
 	assert.equal(JSON.parse(String(ws.sent.at(-1))).commit, true);
 	await act(async () => { ws.committed("last words"); });
-	assert.deepEqual(f.state.appends, ["first phrase second phrase last words"], "one flush, after the final commit");
+	assert.deepEqual(f.state.appends, [], "the Stop commit starts the quiet window, it does not end the run");
+	await act(async () => { t.mock.timers.tick(STOP_QUIET_MS); });
+	assert.deepEqual(f.state.appends, ["first phrase second phrase last words"], "one flush, after the quiet window");
 	assert.equal(f.dictation.phase, "idle");
 	assert.equal(ws.readyState, 3, "the client closes the socket");
+});
+
+/** An ElevenLabs run that is recording on an open socket. */
+async function elevenLabsRun(t: { mock: { timers: { enable: (o: { apis: ["setTimeout"] }) => void } } }) {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const f = await fixture();
+	f.state.token = { provider: "elevenlabs" };
+	await f.mount();
+	await act(async () => { notifySettingsSaved("dictation"); });
+	await act(async () => { f.dictation.toggle(); });
+	const ws = Socket.all[0]!;
+	await act(async () => { ws.open(); });
+	return { f, ws };
+}
+
+test("ElevenLabs: a late VAD commit before the Stop commit does not lose the Stop commit's words", async (t) => {
+	const { f, ws } = await elevenLabsRun(t);
+	await act(async () => { f.dictation.stop(); });
+	await act(async () => { ws.committed("earlier phrase"); });
+	assert.deepEqual(f.state.appends, [], "the first commit after Stop does not end the run");
+	await act(async () => { t.mock.timers.tick(STOP_QUIET_MS - 1); ws.committed("trailing words"); });
+	await act(async () => { t.mock.timers.tick(STOP_QUIET_MS - 1); });
+	assert.deepEqual(f.state.appends, [], "each message restarts the quiet window");
+	await act(async () => { t.mock.timers.tick(1); });
+	assert.deepEqual(f.state.appends, ["earlier phrase trailing words"], "both texts, one flush");
+	assert.equal(f.dictation.phase, "idle");
+	assert.equal(ws.readyState, 3);
+});
+
+test("ElevenLabs: a single commit after Stop finalizes once the quiet window passes", async (t) => {
+	const { f, ws } = await elevenLabsRun(t);
+	await act(async () => { f.dictation.stop(); });
+	await act(async () => { ws.committed("only words"); });
+	await act(async () => { t.mock.timers.tick(STOP_QUIET_MS - 1); });
+	assert.equal(f.dictation.phase, "stopping");
+	await act(async () => { t.mock.timers.tick(1); });
+	assert.deepEqual(f.state.appends, ["only words"]);
+	assert.equal(f.dictation.phase, "idle");
+});
+
+test("ElevenLabs: Esc during the quiet window discards the transcript and the timer never fires later", async (t) => {
+	const { f, ws } = await elevenLabsRun(t);
+	await act(async () => { ws.committed("spoken earlier"); });
+	await act(async () => { f.dictation.stop(); });
+	await act(async () => { ws.committed("stop words"); });
+	await act(async () => { f.dictation.cancel(); });
+	assert.equal(f.dictation.phase, "idle");
+	await act(async () => { t.mock.timers.tick(STOP_QUIET_MS * 10); });
+	assert.deepEqual(f.state.appends, []);
+});
+
+test("ElevenLabs: with no commit at all the 3 s safety net still ends the run", async (t) => {
+	const { f } = await elevenLabsRun(t);
+	await act(async () => { f.dictation.stop(); });
+	await act(async () => { t.mock.timers.tick(2999); });
+	assert.equal(f.dictation.phase, "stopping");
+	await act(async () => { t.mock.timers.tick(1); });
+	assert.equal(f.dictation.phase, "idle");
+});
+
+test("ElevenLabs: a quiet window already running is cut off by unmount", async (t) => {
+	const { f, ws } = await elevenLabsRun(t);
+	await act(async () => { f.dictation.stop(); });
+	await act(async () => { ws.committed("departing"); });
+	await f.unmount();
+	await act(async () => { t.mock.timers.tick(STOP_QUIET_MS * 10); });
+	assert.deepEqual(f.state.appends, []);
+});
+
+test("ElevenLabs: the saved language reaches the socket URL as language_code", async (t) => {
+	const { ws } = await elevenLabsRun(t);
+	assert.equal(new URL(ws.url).searchParams.get("language_code"), "pl");
 });
 
 test("ElevenLabs: a dropped connection reconnects once with a FRESH token, then reports the provider by name", async () => {
