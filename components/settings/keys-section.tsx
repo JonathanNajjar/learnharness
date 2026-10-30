@@ -42,6 +42,7 @@ import { ProviderMenuList } from "./model-menu.tsx";
 import { MenuShell } from "@/components/menu-shell";
 import { notifySettingsSaved } from "@/components/settings-signal";
 import { DictationLanguageSetting } from "@/components/dictation-language";
+import { DictationProviderSetting } from "@/components/dictation-provider-setting";
 
 /** One pi-ai provider with plain API-key auth (the Platform seam —
  *  derived from pi-ai's own env-key table; no drift possible). */
@@ -625,6 +626,10 @@ export function KeysSection({
 					/>;
 				})}
 				{label === "Dictation" && <>
+					<DictationProviderSetting keyPresence={{
+						deepgram: toolRows.some((s) => s.id === "DEEPGRAM_API_KEY" && s.present),
+						elevenlabs: toolRows.some((s) => s.id === "ELEVENLABS_API_KEY" && s.present),
+					}} />
 					<DictationLanguageSetting />
 					<p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
 						Create a <a

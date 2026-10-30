@@ -188,7 +188,7 @@ flowchart LR
         FS["fs stores — src/store (data/)"]
         LLM["LLM engines — pi-ai/OpenRouter via piEngineFor"]
         HEAD["headless Chrome — demo verify · SVG render"]
-        DEEP["Deepgram STT — token-minting route, browser-side WebSocket"]
+        DEEP["Dictation STT (Deepgram or ElevenLabs Scribe) — token-minting route, browser-side WebSocket"]
         TTS["ElevenLabs read aloud — /api/tts server proxy, key stays server-side"]
         WEB["web tools — Google CSE + Readability/Jina (researcher)"]
     end
@@ -414,7 +414,7 @@ flowchart LR
     end
     subgraph OUTSIDE["outside the process"]
         OR["OpenRouter (BYOK key from auth.json, env-injected — never argv)"]
-        DG["Deepgram STT (browser-direct WebSocket)"]
+        DG["Deepgram / ElevenLabs STT (browser-direct WebSocket)"]
         EL["ElevenLabs text-to-speech (read aloud, via the /api/tts proxy)"]
         GCSE["Google CSE / Jina (researcher tools)"]
         CHROME["system Chrome (headless: demo verify · SVG render)"]
@@ -428,6 +428,8 @@ flowchart LR
     NEXT -->|"POST /v1/text-to-speech/{voice}/stream<br/>xi-api-key — the key never leaves this process"| EL
     REND -->|"fetch /api/*"| NEXT
 ```
+
+**Dictation path (Deepgram or ElevenLabs).** The renderer never holds a speech key. `GET /api/stt/token` (`src/server/stt-token.ts`) resolves the provider on the server from the saved `dictation.provider` and which keys exist (`resolveDictationProvider` in `src/core/dictation-provider.ts`: an explicit choice wins; otherwise whichever key exists, Deepgram if both), mints a short-lived token upstream (Deepgram access token; ElevenLabs single-use `realtime_scribe` token), and returns `{ provider, token }`; a missing key is a 503 naming the key id. The renderer then opens the provider's WebSocket directly and audio never touches this server. The provider-specific wire protocol lives in `src/core/dictation-engine.ts` (`DictationEngine`): Deepgram sends binary linear16 frames, authenticates via the `bearer` subprotocol and finishes on close code 1000; ElevenLabs sends base64 JSON `input_audio_chunk` messages, authenticates with a `token` query parameter, commits phrases on VAD pauses, and finishes when the commit requested at Stop answers — the client closes the socket. An ElevenLabs engine is per run (it remembers that Stop requested a commit), and its tokens are single-use, so the hook's reconnect-once always mints a fresh token.
 
 The Electron main is a launcher + credential/security guard, never a host for teaching or inference logic: single-instance lock, deny-by-default permissions, origin-pinned navigation, sandboxed renderer. All Next.js code runs unchanged in a child process (`output: "standalone"`), relocated by the `LH_DATA_DIR` seam (also the test seam — `data-dir-seam.test.ts` covers it, including a fresh-child-process case). The build hard-fails if repo `data/` would leak into the bundle or if prompt assets fall out of the trace (`scripts/build-server.mjs`).
 

@@ -26,6 +26,9 @@ class Socket extends EventTarget {
 	close() { this.readyState = 3; }
 	open() { this.readyState = Socket.OPEN; this.dispatchEvent(new Event("open")); }
 	end(code = 1000) { this.close(); this.dispatchEvent(Object.assign(new Event("close"), { code })); }
+	committed(text: string) {
+		this.dispatchEvent(Object.assign(new Event("message"), { data: JSON.stringify({ message_type: "committed_transcript", text }) }));
+	}
 	final(text: string) {
 		this.dispatchEvent(Object.assign(new Event("message"), {
 			data: JSON.stringify({ type: "Results", is_final: true, channel: { alternatives: [{ transcript: text }] } }),
@@ -39,7 +42,13 @@ class AudioGraph {
 	audioWorklet = { addModule: async () => {} };
 	createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
 }
-class Worklet { port = {}; connect() {} disconnect() {} }
+class Worklet {
+	static last: Worklet | undefined;
+	port: { onmessage?: (e: { data: unknown }) => void } = {};
+	constructor() { Worklet.last = this; }
+	connect() {}
+	disconnect() {}
+}
 
 const globals = globalThis as Record<string, unknown>;
 let restore: (() => void) | undefined;
@@ -58,6 +67,9 @@ async function fixture(language: "pl" | "en" = "pl", delayedRead?: Promise<Respo
 		captures: 0,
 		stops: 0,
 		appends: [] as string[],
+		/** What the token route answers: the provider it resolved, or a keyless 503. */
+		token: { provider: "deepgram" } as { provider: "deepgram" | "elevenlabs" } | { keyless: string },
+		mints: 0,
 	};
 	Socket.all = [];
 	const previous = new Map<string, PropertyDescriptor | undefined>();
@@ -71,7 +83,11 @@ async function fixture(language: "pl" | "en" = "pl", delayedRead?: Promise<Respo
 		WebSocket: Socket, AudioContext: AudioGraph, AudioWorkletNode: Worklet,
 		IS_REACT_ACT_ENVIRONMENT: true,
 		fetch: async (url: string, init?: RequestInit) => {
-			if (url === "/api/stt/token") return Response.json({ token: "test-token" });
+			if (url === "/api/stt/token") {
+				state.mints++;
+				if ("keyless" in state.token) return Response.json({ message: "no key", keyless: state.token.keyless }, { status: 503 });
+				return Response.json({ provider: state.token.provider, token: "test-token" });
+			}
 			if (url === "/api/settings") {
 				state.reads++;
 				if (state.nextRead) { const response = state.nextRead; state.nextRead = undefined; return response; }
@@ -319,4 +335,101 @@ test("microphone permission resolving after unmount immediately stops the late s
 	assert.equal(f.state.stops, 1);
 	assert.equal(Socket.all.length, 0);
 	assert.equal(isDictationActive(), false);
+});
+
+const frame = (...bytes: number[]) => new Uint8Array(bytes).buffer;
+const sendFrame = (buffer: ArrayBuffer) => Worklet.last!.port.onmessage!({ data: { type: "audio", buffer } });
+
+test("ElevenLabs: queued frames flush as JSON on open, finals defer, Stop commits and the final commit lands the text and closes the socket", async () => {
+	const f = await fixture();
+	f.state.token = { provider: "elevenlabs" };
+	await f.mount();
+	await act(async () => { notifySettingsSaved("dictation"); }); // drops the warm token minted for the default provider
+	await act(async () => { f.dictation.toggle(); });
+	const ws = Socket.all[0]!;
+	assert.match(ws.url, /^wss:\/\/api\.elevenlabs\.io\/v1\/speech-to-text\/realtime\?/);
+	assert.equal(new URL(ws.url).searchParams.get("token"), "test-token");
+	assert.deepEqual(ws.protocols, []);
+	await act(async () => { sendFrame(frame(1, 2)); sendFrame(frame(3)); });
+	assert.deepEqual(ws.sent, [], "nothing is sent, or dropped, before the socket opens");
+	await act(async () => { ws.open(); });
+	assert.deepEqual(ws.sent.map((s) => JSON.parse(s as string)), [
+		{ message_type: "input_audio_chunk", audio_base_64: "AQI=", commit: false, sample_rate: 16000 },
+		{ message_type: "input_audio_chunk", audio_base_64: "Aw==", commit: false, sample_rate: 16000 },
+	]);
+	await act(async () => { ws.committed("first phrase"); ws.committed("second phrase"); });
+	assert.deepEqual(f.state.appends, [], "transcripts stay deferred during the run");
+	await act(async () => { f.dictation.stop(); });
+	assert.equal(f.dictation.phase, "stopping");
+	assert.equal(JSON.parse(String(ws.sent.at(-1))).commit, true);
+	await act(async () => { ws.committed("last words"); });
+	assert.deepEqual(f.state.appends, ["first phrase second phrase last words"], "one flush, after the final commit");
+	assert.equal(f.dictation.phase, "idle");
+	assert.equal(ws.readyState, 3, "the client closes the socket");
+});
+
+test("ElevenLabs: a dropped connection reconnects once with a FRESH token, then reports the provider by name", async () => {
+	const f = await fixture();
+	f.state.token = { provider: "elevenlabs" };
+	await f.mount();
+	await act(async () => { notifySettingsSaved("dictation"); });
+	await act(async () => { f.dictation.toggle(); });
+	const mintsAtStart = f.state.mints;
+	await act(async () => { Socket.all[0]!.open(); Socket.all[0]!.end(1006); });
+	assert.equal(f.state.mints, mintsAtStart + 1, "single-use tokens: the reconnect mints again");
+	const second = Socket.all[1]!;
+	assert.match(second.url, /elevenlabs/);
+	await act(async () => { second.open(); second.end(1006); });
+	assert.equal(f.dictation.error, "ElevenLabs connection lost (1006)");
+	assert.equal(f.dictation.phase, "idle");
+});
+
+test("ElevenLabs: a provider error ends the run with a short message and keeps buffered text", async () => {
+	const f = await fixture();
+	f.state.token = { provider: "elevenlabs" };
+	await f.mount();
+	await act(async () => { notifySettingsSaved("dictation"); });
+	await act(async () => { f.dictation.toggle(); });
+	const ws = Socket.all[0]!;
+	await act(async () => {
+		ws.open();
+		ws.committed("kept");
+		ws.dispatchEvent(Object.assign(new Event("message"), { data: JSON.stringify({ message_type: "quota_exceeded", error: "x" }) }));
+	});
+	assert.equal(f.dictation.error, "ElevenLabs quota exceeded");
+	assert.deepEqual(f.state.appends, ["kept"]);
+});
+
+test("Deepgram keeps a provider-named connection error", async () => {
+	const f = await fixture();
+	await f.mount();
+	await act(async () => { f.dictation.toggle(); });
+	await act(async () => { Socket.all[0]!.open(); Socket.all[0]!.end(1006); });
+	await act(async () => { Socket.all[1]!.open(); Socket.all[1]!.end(1006); });
+	assert.equal(f.dictation.error, "Deepgram connection lost (1006)");
+});
+
+test("a keyless route names the provider whose key is missing", async () => {
+	const f = await fixture();
+	await f.mount();
+	for (const [keyless, line] of [
+		["ELEVENLABS_API_KEY", "Dictation needs an ElevenLabs key"],
+		["DEEPGRAM_API_KEY", "Dictation needs a Deepgram key"],
+	] as const) {
+		f.state.token = { keyless };
+		await act(async () => { notifySettingsSaved("dictation"); }); // drops the warm token
+		await act(async () => { f.dictation.toggle(); });
+		assert.equal(f.dictation.error, line);
+		assert.equal(Socket.all.length, 0);
+		await act(async () => { f.dictation.clearError(); });
+	}
+});
+
+test("saving the dictation settings drops the warm token so a provider switch applies to the next run", async () => {
+	const f = await fixture();
+	await f.mount();
+	f.state.token = { provider: "elevenlabs" };
+	await act(async () => { notifySettingsSaved("dictation"); });
+	await act(async () => { f.dictation.toggle(); });
+	assert.match(Socket.all[0]!.url, /elevenlabs/);
 });

@@ -64,6 +64,7 @@ export * from "./fuzzy.ts";
 export * from "./settings.ts";
 export * from "./dictation.ts";
 export * from "./dictation-engine.ts";
+export * from "./dictation-provider.ts";
 // speech-text.ts (read aloud, 2026-10-29): markdown → spoken chunks. Pure.
 export * from "./speech-text.ts";
 // graph-deletion.ts (wave 6): the whole module is PURE but storage-port
