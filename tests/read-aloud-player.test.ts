@@ -41,13 +41,15 @@ class FakeAudio implements AudioLike {
 
 interface Pending {
 	text: string;
+	voiceId?: string;
+	modelId?: string;
 	signal: AbortSignal | null | undefined;
 	respond: (res: Response) => void;
 	reject: (error: unknown) => void;
 }
 
 /** A fake /api/tts: every request waits until the test answers it. */
-function harness() {
+function harness(speech?: () => { voiceId?: string; modelId?: string }) {
 	const audios: FakeAudio[] = [];
 	const requests: Pending[] = [];
 	let urlCount = 0;
@@ -56,9 +58,10 @@ function harness() {
 	const fetchFake = ((url: string, init: RequestInit) => {
 		assert.equal(url, "/api/tts");
 		assert.equal(init.method, "POST");
-		const text = (JSON.parse(init.body as string) as { text: string }).text;
+		const body = JSON.parse(init.body as string) as { text: string; voiceId?: string; modelId?: string };
+		const text = body.text;
 		return new Promise<Response>((resolve, reject) => {
-			requests.push({ text, signal: init.signal, respond: resolve, reject });
+			requests.push({ text, voiceId: body.voiceId, modelId: body.modelId, signal: init.signal, respond: resolve, reject });
 			init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
 		});
 	}) as unknown as typeof fetch;
@@ -75,6 +78,7 @@ function harness() {
 			return url;
 		},
 		revokeObjectURL: (url) => revoked.push(url),
+		speech,
 	});
 	const snapshots: ReadAloudSnapshot[] = [];
 	player.subscribe(() => snapshots.push(player.getSnapshot()));
@@ -361,6 +365,71 @@ describe("errors", () => {
 		const again = await fail((x) => x.requests[0]!.respond(new Response("no", { status: 500 })));
 		again.player.clearError();
 		assert.equal(again.player.getSnapshot().error, null);
+	});
+});
+
+describe("the in-memory audio cache", () => {
+	/** Play one single-chunk source to its end. */
+	const playThrough = async (h: ReturnType<typeof harness>, chunks: string[], answer?: number) => {
+		const done = h.player.play("m1", chunks);
+		await settle();
+		if (answer !== undefined) h.ok(answer);
+		await settle();
+		h.audio().end();
+		await done;
+	};
+
+	it("a second play of the same message makes no new request", async () => {
+		const h = harness();
+		await playThrough(h, ["Hello there."], 0);
+		assert.equal(h.requests.length, 1);
+		const again = h.player.play("m1", ["Hello there."]);
+		await settle();
+		assert.equal(h.requests.length, 1, "served from memory");
+		assert.equal(h.audio().played.length, 2, "and it plays");
+		h.audio().end();
+		await again;
+	});
+
+	it("a different voice or model makes a new request, and each is cached on its own", async () => {
+		let options: { voiceId?: string; modelId?: string } = {};
+		const h = harness(() => options);
+		await playThrough(h, ["Hi."], 0);
+		options = { voiceId: "v1" };
+		await playThrough(h, ["Hi."], 1);
+		options = { voiceId: "v1", modelId: "m1" };
+		await playThrough(h, ["Hi."], 2);
+		assert.deepEqual(
+			h.requests.map((r) => [r.voiceId, r.modelId]),
+			[
+				[undefined, undefined],
+				["v1", undefined],
+				["v1", "m1"],
+			],
+		);
+		options = { voiceId: "v1" };
+		const again = h.player.play("m1", ["Hi."]);
+		await settle();
+		assert.equal(h.requests.length, 3);
+		h.audio().end();
+		await again;
+	});
+
+	it("an aborted or failed load is never cached", async () => {
+		const h = harness();
+		const stopped = h.player.play("m1", ["Hi."]);
+		await settle();
+		h.player.stop();
+		await stopped;
+		const failed = h.player.play("m1", ["Hi."]);
+		await settle();
+		h.requests[1]!.respond(new Response("no", { status: 500 }));
+		await failed;
+		assert.equal(h.player.getSnapshot().error?.kind, "upstream");
+		await playThrough(h, ["Hi."], 2);
+		assert.equal(h.requests.length, 3, "each earlier attempt asked again");
+		await playThrough(h, ["Hi."]);
+		assert.equal(h.requests.length, 3, "the success is cached");
 	});
 });
 

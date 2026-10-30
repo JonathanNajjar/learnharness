@@ -16,14 +16,18 @@
  * played, been stopped, or failed.
  *
  * Seams for later slices, not built here:
- *  - `loadChunk` is where an in-memory audio cache (slice 8) wraps the
- *    network: it turns (text, signal) into audio bytes, nothing more.
+ *  - `loadChunk` turns (text, signal, voice/model) into audio bytes, nothing
+ *    more. The default wraps the network in the in-memory audio cache
+ *    (components/audio-cache.ts, slice 8). `speech` supplies the voice and
+ *    model per play() (slice 9 plugs the learner's picks in there).
  *  - `stop()` is public and idempotent, so Esc and dictation (slice 7) and
  *    auto-read (slice 10) can call it.
  *
  * Errors keep keyless apart from upstream (the keyless one deep-links to the
  * key box; the rest show inline). An abort from stop() is never an error.
  */
+
+import { withAudioCache, type ChunkLoader, type SpeechOptions } from "./audio-cache.ts";
 
 /** The client-authored KEYLESS line (the route's 503 body is dev-speak):
  *  the Listen button shows it and deep-links Settings → Keys → Read aloud. */
@@ -58,8 +62,11 @@ export interface ReadAloudDeps {
 	createAudio?: () => AudioLike;
 	createObjectURL?: (blob: Blob) => string;
 	revokeObjectURL?: (url: string) => void;
-	/** Text → audio bytes. Defaults to the /api/tts request; the cache seam. */
-	loadChunk?: (text: string, signal: AbortSignal) => Promise<Blob>;
+	/** Text → audio bytes. Defaults to the /api/tts request behind the audio cache. */
+	loadChunk?: ChunkLoader;
+	/** The voice and model for the next play(), read when it starts. Absent
+	 *  fields mean the server's defaults; they are part of the cache key. */
+	speech?: () => SpeechOptions;
 }
 
 export interface ReadAloudPlayer {
@@ -83,14 +90,14 @@ class ReadAloudFailure extends Error {
 }
 
 /** The /api/tts request for one chunk, errors mapped to keyless/upstream. */
-function tts(fetchFn: typeof fetch): (text: string, signal: AbortSignal) => Promise<Blob> {
-	return async (text, signal) => {
+function tts(fetchFn: typeof fetch): ChunkLoader {
+	return async (text, signal, options) => {
 		let res: Response;
 		try {
 			res = await fetchFn("/api/tts", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ text }),
+				body: JSON.stringify({ text, voiceId: options?.voiceId, modelId: options?.modelId }),
 				signal,
 			});
 		} catch (error) {
@@ -110,7 +117,7 @@ function tts(fetchFn: typeof fetch): (text: string, signal: AbortSignal) => Prom
 }
 
 export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer {
-	const loadChunk = deps.loadChunk ?? tts(deps.fetch ?? ((input, init) => fetch(input, init)));
+	const loadChunk = deps.loadChunk ?? withAudioCache(tts(deps.fetch ?? ((input, init) => fetch(input, init))));
 	const createAudio = deps.createAudio ?? (() => new Audio());
 	const createObjectURL = deps.createObjectURL ?? ((blob: Blob) => URL.createObjectURL(blob));
 	const revokeObjectURL = deps.revokeObjectURL ?? ((url: string) => URL.revokeObjectURL(url));
@@ -156,9 +163,10 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 		});
 
 	const run = async (id: number, sourceId: string, chunks: readonly string[], signal: AbortSignal) => {
+		const options = deps.speech?.();
 		const loads: Promise<Blob>[] = [];
 		const start = (i: number) => {
-			const load = loadChunk(chunks[i]!, signal);
+			const load = loadChunk(chunks[i]!, signal, options);
 			load.catch(() => {}); // surfaced when its turn comes, never as an unhandled rejection
 			loads[i] = load;
 		};
