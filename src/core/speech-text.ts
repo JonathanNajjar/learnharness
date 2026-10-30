@@ -241,3 +241,22 @@ export function markdownToSpeechChunks(markdown: string): string[] {
 	flush();
 	return chunks;
 }
+
+/**
+ * What the dock reads for a pending question (slice 11): the PROMPT only, never
+ * the answer options (nor their descriptions), and never the quiz's explanation
+ * or an explain's committed answer. The prompt is the question text plus the
+ * `details` (QuestionData.context) the dock shows right under it: the schema
+ * defines them as "extra context or instructions shown under the question", so
+ * they are part of what the learner is asked to do. Every mode (single/multi
+ * select, text) reads the same fields. Takes the dock's parsed shape, so a
+ * QuestionData or ClientQuestion fits as is.
+ */
+export function questionPromptMarkdown(question: { question: string; context?: string }): string {
+	return [question.question, question.context ?? ""].filter((part) => part.trim() !== "").join("\n\n");
+}
+
+/** The prompt of a question as speech chunks (see questionPromptMarkdown). */
+export function questionPromptSpeech(question: { question: string; context?: string }): string[] {
+	return markdownToSpeechChunks(questionPromptMarkdown(question));
+}

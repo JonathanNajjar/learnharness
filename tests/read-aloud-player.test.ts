@@ -239,6 +239,38 @@ describe("playing a source", () => {
 	});
 });
 
+describe("how play() ends (auto-read sequencing, slice 11)", () => {
+	it("resolves true when the source played to its end", async () => {
+		const h = harness();
+		const done = h.player.play("m1", ["x"]);
+		await settle();
+		h.ok(0);
+		await settle();
+		h.audio().end();
+		assert.equal(await done, true);
+	});
+
+	it("resolves false when it was stopped, superseded by another source, or failed", async () => {
+		const stopped = harness();
+		const a = stopped.player.play("m1", ["x"]);
+		await settle();
+		stopped.player.stop();
+		assert.equal(await a, false);
+
+		const superseded = harness();
+		const b = superseded.player.play("m1", ["x"]);
+		await settle();
+		void superseded.player.play("m2", ["y"]);
+		assert.equal(await b, false);
+
+		const failed = harness();
+		const c = failed.player.play("m1", ["x"]);
+		await settle();
+		failed.requests[0]!.respond(Response.json({ message: "boom" }, { status: 502 }));
+		assert.equal(await c, false);
+	});
+});
+
 describe("one source at a time", () => {
 	it("starting another source stops the first: audio paused, its pending chunks never played", async () => {
 		const h = harness();

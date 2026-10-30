@@ -8,6 +8,9 @@ import { useEnterSubmits } from "@/components/enter-submits";
 import { PathInput } from "@/components/path-input";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import { cn } from "@/lib/utils";
+import { ListenButton } from "@/components/read-aloud";
+import { questionSourceId } from "@/components/auto-read";
+import type { ReadAloudPlayer } from "@/components/read-aloud-player";
 import {
 	buildAnswer,
 	repairMathForDisplay,
@@ -23,6 +26,7 @@ import {
 	parseAskInput,
 	parseQuizInput,
 	parseExplainInput,
+	questionPromptMarkdown,
 	toggleOption,
 	toggleOther,
 	type AnswerRequest,
@@ -96,6 +100,9 @@ export interface QuestionDockProps {
 	 *  and say so in the hint row. The server registry is the real gate;
 	 *  this is the affordance. */
 	compactionRunning?: boolean;
+	/** The read-aloud player behind the Listen button. Defaults to the window's;
+	 *  tests pass their own. */
+	player?: ReadAloudPlayer;
 }
 
 export function QuestionDock({
@@ -112,6 +119,7 @@ export function QuestionDock({
 	phase = "probe",
 	dictationClaim = true,
 	compactionRunning = false,
+	player,
 }: QuestionDockProps) {
 	// The probe-phase names (owner, 2026-10-09) canonicalize onto their
 	// teach twins for every dock concern — parse dispatch, labels, kinds:
@@ -168,6 +176,7 @@ export function QuestionDock({
 					onEscape={onEscape}
 					dictationClaim={dictationClaim}
 					compactionRunning={compactionRunning}
+					player={player}
 				/>
 			</div>
 		</>
@@ -265,6 +274,7 @@ function QuestionDockForm({
 	onEscape,
 	dictationClaim = true,
 	compactionRunning = false,
+	player,
 }: Omit<QuestionDockProps, "expanded" | "onExpand" | "reveal">) {
 	const kind = toolQuestionKind(toolName);
 
@@ -566,19 +576,23 @@ function QuestionDockForm({
 			    Capped by the measured column (--dock-max-h; the old fixed 55dvh cut
 			    long questions short — owner round, 2026-10-05). */}
 			<div data-dock-scroll-area="" data-session-find-root="" className="max-h-[var(--dock-max-h,55dvh)] overflow-y-auto px-4 pt-3">
-				<div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-					{toolName === "probe"
-						? "Probe"
-						: toolName === "recall"
-							? "Recall"
-							: kind === "quiz"
-								? qd.questionType === "predict"
-									? "Prediction"
-									: "Check"
-									: kind === "explain"
-										? "Explain"
-											: "Question"}
-					{qd.mode === "multi-select" && " · select all that apply"}
+				<div className="mb-1 flex items-center justify-between gap-2">
+					<div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+						{toolName === "probe"
+							? "Probe"
+							: toolName === "recall"
+								? "Recall"
+								: kind === "quiz"
+									? qd.questionType === "predict"
+										? "Prediction"
+										: "Check"
+										: kind === "explain"
+											? "Explain"
+												: "Question"}
+						{qd.mode === "multi-select" && " · select all that apply"}
+					</div>
+					{/* Read aloud (slice 11): the PROMPT only, never the options. */}
+					<ListenButton sourceId={questionSourceId(toolCallId)} markdown={questionPromptMarkdown(qd)} player={player} />
 				</div>
 				<div className="mb-3 font-medium">
 					<ToolContentResponse>{qd.question}</ToolContentResponse>
