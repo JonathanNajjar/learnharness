@@ -7,6 +7,7 @@
  *
  *  - Prose flattens to plain sentences: headings and list items become
  *    sentences of their own, emphasis markers vanish, links read their label.
+ *    A bare URL or autolink reads as its host name only (owner, 2026-10-29).
  *  - Whole blocks the ear can't use become ONE spoken marker each: fenced
  *    code, mermaid fences, tables and display math (owner 2026-10-29).
  *  - Inline math reads as words for the common forms (powers, fractions,
@@ -72,6 +73,26 @@ function asSentence(text: string): string {
 	return /[.!?…:;]["')\]]*$/.test(text) ? text : `${text}.`;
 }
 
+const BARE_URL = /https?:\/\/[^\s<>]+/g;
+
+/** A URL's host name, the only part worth hearing (owner, 2026-10-29). */
+function urlHost(url: string): string {
+	return /^https?:\/\/(?:[^@/?#\s]*@)?([^:/?#\s]+)/i.exec(url)?.[1] ?? url;
+}
+
+/** The URL proper: what a bare match carries after it (sentence punctuation,
+ *  a closing bracket or emphasis marker) is not part of it. A `)` stays only
+ *  when the URL opened its own `(`. */
+function trimUrl(match: string): string {
+	let url = match;
+	for (;;) {
+		const last = url[url.length - 1];
+		const closesOwn = last === ")" && (url.match(/\(/g)?.length ?? 0) >= (url.match(/\)/g)?.length ?? 0);
+		if (last === undefined || !/[.,;:!?)\]'"*_~]/.test(last) || closesOwn) return url;
+		url = url.slice(0, -1);
+	}
+}
+
 /** One paragraph's inline markdown → plain words. */
 function inlineText(paragraph: string, held: string[]): string {
 	const hold = (text: string) => {
@@ -84,8 +105,12 @@ function inlineText(paragraph: string, held: string[]): string {
 		.replace(/\[\^[^\]]*\]/g, "")
 		.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
 		.replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
-		.replace(/<(https?:\/\/[^>\s]+)>/g, "$1")
+		.replace(/<(https?:\/\/[^>\s]+)>/g, (_, url: string) => urlHost(url))
 		.replace(/<\/?[A-Za-z][^>]*>/g, "")
+			.replace(BARE_URL, (match) => {
+				const url = trimUrl(match);
+				return urlHost(url) + match.slice(url.length);
+			})
 		.replace(/(\*\*|__|~~)(?=\S)(.+?)(?<=\S)\1/g, "$2")
 		.replace(/(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?!\*)/g, "$1")
 		.replace(/(?<!\w)_(?=[^\s_])(.+?)(?<=[^\s_])_(?!\w)/g, "$1");

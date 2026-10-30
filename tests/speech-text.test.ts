@@ -42,6 +42,31 @@ describe("prose", () => {
 	});
 });
 
+describe("URLs are spoken as their host name (owner decision, 2026-10-29)", () => {
+	const cases: Array<[string, string, string]> = [
+		["a bare URL", "Read https://en.wikipedia.org/wiki/Entropy now.", "Read en.wikipedia.org now."],
+		["a bare URL ending the sentence keeps the sentence's period", "See https://en.wikipedia.org/wiki/Entropy.", "See en.wikipedia.org."],
+		["trailing comma and parenthesis are not part of the URL", "(see https://example.com/a/b), then go", "(see example.com), then go"],
+		["a bare URL in bold", "Try **https://example.com/x**!", "Try example.com!"],
+		["query, fragment, port and credentials never speak", "Open http://me@host.example:8080/p?q=1&r=2#frag today", "Open host.example today"],
+		["underscores in the path are not emphasis", "Go to https://example.com/a_b_c/d_e now", "Go to example.com now"],
+		["a URL with no path", "Visit https://example.com for more", "Visit example.com for more"],
+		["an autolink", "Source: <https://en.wikipedia.org/wiki/Entropy>.", "Source: en.wikipedia.org."],
+		["a link with a label still reads the label", "See [the docs](https://example.com/a_b) for more.", "See the docs for more."],
+		["a link whose label is itself a URL reads the host", "[https://example.com/a/b](https://example.com/a/b)", "example.com"],
+		["two URLs", "https://a.example/x and https://b.example/y", "a.example and b.example"],
+		["a URL in a list item", "- https://example.com/one", "example.com."],
+	];
+	for (const [name, markdown, expected] of cases) {
+		it(name, () => assert.equal(speech(markdown), expected));
+	}
+
+	it("no URL punctuation reaches the speech", () => {
+		const out = speech("A https://x.example/a/b?c=d&e=f#g and <https://y.example/p> and [l](https://z.example/q).");
+		assert.doesNotMatch(out, /[:/?#=&<>]|https?/);
+	});
+});
+
 describe("skipped blocks become exactly one marker each", () => {
 	const cases: Array<[string, string, string]> = [
 		["fenced code", "Run this:\n\n```ts\nconst x = 1;\nconsole.log(x);\n```\n\nDone.", "Run this: Code shown on screen. Done."],
