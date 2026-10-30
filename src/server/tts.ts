@@ -15,8 +15,23 @@
  * ({ message, keyless: <key id> }), 502 upstream ({ message, upstreamStatus }
  * — the provider's own status, e.g. quota or permission). The key never
  * appears in any body, even one an upstream echoes it into.
+ *
+ * The same module lists the account's voices and TTS models for Settings →
+ * Read aloud (slice 9): listTtsVoices follows the provider's page token,
+ * listTtsModels filters to text-to-speech models and caches the list in
+ * memory for TTS_MODELS_CACHE_MS. speak() resolves its model against that
+ * list (resolveTtsModel), so playback always uses a model that exists; when
+ * the list is unavailable it trusts the requested model, else the default.
  */
 
+import {
+	DEFAULT_TTS_MODEL_ID,
+	DEFAULT_TTS_VOICE_ID,
+	isPlainTtsId,
+	resolveTtsModel,
+	type TtsModel,
+	type TtsVoice,
+} from "../core/read-aloud.ts";
 import { keyValue } from "./keys.ts";
 
 /** The wire-callable shape the proxy closes over (tests inject a stub). */
@@ -25,6 +40,14 @@ type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 /** Longest text one request may carry (owner, 2026-10-29): far below every
  *  model's own limit — the client sends short chunks anyway. */
 export const TTS_MAX_TEXT_CHARS = 2500;
+
+/** How long the model list is reused: it changes when ElevenLabs ships a model,
+ *  so a few minutes keeps the picker and every speak() off the network. */
+export const TTS_MODELS_CACHE_MS = 5 * 60 * 1000;
+/** A voices/models lookup that takes longer than this is treated as unreachable. */
+const CATALOG_TIMEOUT_MS = 8000;
+/** Upper bound on voice pages followed (100 per page), against a looping token. */
+const MAX_VOICE_PAGES = 50;
 
 /** One text-to-speech provider behind the proxy. */
 export interface TtsProvider {
@@ -37,14 +60,19 @@ export interface TtsProvider {
 	defaultModelId: string;
 	/** The upstream streaming request for one chunk of text. */
 	request(input: { key: string; text: string; voiceId: string; modelId: string }): { url: string; init: RequestInit };
+	/** One page of the account's voices (`pageToken` from the previous page). */
+	voicesRequest(input: { key: string; pageToken?: string }): { url: string; init: RequestInit };
+	/** A voices page → its voices and the next page token (undefined at the end). */
+	parseVoices(json: unknown): { voices: TtsVoice[]; next?: string };
+	/** The account's models. */
+	modelsRequest(input: { key: string }): { url: string; init: RequestInit };
+	/** The TTS-capable models of a models response. */
+	parseModels(json: unknown): TtsModel[];
 	/** A short human line from an upstream error body ("" when none). */
 	errorDetail(body: string): string;
 }
 
-/** Alice — premade "Clear, Engaging Educator" (owner, 2026-10-29). */
-export const DEFAULT_TTS_VOICE_ID = "Xb7hH8MSUJpSbSDYk0k2";
-/** Until the live model list lands (slice 9): ElevenLabs' recommended low-latency model. */
-export const DEFAULT_TTS_MODEL_ID = "eleven_v4_turbo";
+export { DEFAULT_TTS_MODEL_ID, DEFAULT_TTS_VOICE_ID };
 
 export const elevenLabsTts: TtsProvider = {
 	id: "elevenlabs",
@@ -61,6 +89,44 @@ export const elevenLabsTts: TtsProvider = {
 				body: JSON.stringify({ text, model_id: modelId }),
 			},
 		};
+	},
+	voicesRequest({ key, pageToken }) {
+		const query = new URLSearchParams({ page_size: "100" });
+		if (pageToken) query.set("next_page_token", pageToken);
+		return { url: `https://api.elevenlabs.io/v2/voices?${query}`, init: { headers: { "xi-api-key": key } } };
+	},
+	parseVoices(json) {
+		const page = (typeof json === "object" && json !== null ? json : {}) as Record<string, unknown>;
+		const voices: TtsVoice[] = [];
+		for (const raw of Array.isArray(page.voices) ? page.voices : []) {
+			const v = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+			if (!isPlainTtsId(v.voice_id)) continue;
+			voices.push({
+				id: v.voice_id,
+				name: typeof v.name === "string" && v.name ? v.name : v.voice_id,
+				category: typeof v.category === "string" ? v.category : "",
+			});
+		}
+		const token = page.next_page_token;
+		const next = page.has_more === true && typeof token === "string" && token ? token : undefined;
+		return { voices, next };
+	},
+	modelsRequest({ key }) {
+		return { url: "https://api.elevenlabs.io/v1/models", init: { headers: { "xi-api-key": key } } };
+	},
+	parseModels(json) {
+		if (!Array.isArray(json)) return [];
+		const models: TtsModel[] = [];
+		for (const raw of json) {
+			const m = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+			if (m.can_do_text_to_speech !== true || !isPlainTtsId(m.model_id)) continue;
+			models.push({
+				id: m.model_id,
+				name: typeof m.name === "string" && m.name ? m.name : m.model_id,
+				maxChars: typeof m.maximum_text_length_per_request === "number" ? m.maximum_text_length_per_request : 0,
+			});
+		}
+		return models;
 	},
 	errorDetail(body) {
 		// ElevenLabs errors are { detail: { status, message } } (or a bare string detail).
@@ -88,7 +154,10 @@ export interface SpeakDeps {
 	getKey?: (keyId: string) => string | undefined;
 }
 
-const PLAIN_ID = /^[A-Za-z0-9_.-]{1,100}$/;
+export interface CatalogDeps extends SpeakDeps {
+	/** Clock for the model cache (tests). */
+	now?: () => number;
+}
 
 function badRequest(message: string): Response {
 	return Response.json({ message }, { status: 400 });
@@ -99,32 +168,139 @@ function scrub(text: string, key: string): string {
 	return key ? text.split(key).join("") : text;
 }
 
+function keylessResponse(provider: TtsProvider): Response {
+	return Response.json(
+		{
+			message: `No ${provider.keyId} — add it to auth.json (desktop) or .env.local (dev).`,
+			keyless: provider.keyId,
+		},
+		{ status: 503 },
+	);
+}
+
+/** An upstream answer that is not usable; becomes the 502 response. */
+class UpstreamFailure extends Error {
+	constructor(
+		message: string,
+		readonly upstreamStatus?: number,
+	) {
+		super(message);
+	}
+}
+
+function upstreamResponse(error: unknown): Response {
+	const message = error instanceof UpstreamFailure ? error.message : "Read aloud failed";
+	const upstreamStatus = error instanceof UpstreamFailure ? error.upstreamStatus : undefined;
+	return Response.json({ message, ...(upstreamStatus === undefined ? {} : { upstreamStatus }) }, { status: 502 });
+}
+
+/** The 502 for a non-ok upstream response. */
+async function failureOf(provider: TtsProvider, key: string, upstream: Response): Promise<UpstreamFailure> {
+	const detail = scrub(provider.errorDetail(await upstream.text().catch(() => "")), key).slice(0, 160);
+	return new UpstreamFailure(
+		`${provider.label} error (${upstream.status})${detail ? `: ${detail}` : ""}`,
+		upstream.status,
+	);
+}
+
+const defaultFetch: FetchLike = (url, init) => fetch(url, init);
+
+/** One upstream JSON GET; unreachable / non-ok / unparsable → UpstreamFailure. */
+async function getJson(
+	provider: TtsProvider,
+	key: string,
+	fetchFn: FetchLike,
+	{ url, init }: { url: string; init: RequestInit },
+): Promise<unknown> {
+	// A catalog lookup sits in front of playback (the model list), so a stalled
+	// upstream must not stall speech: give up after CATALOG_TIMEOUT_MS.
+	const signal = AbortSignal.timeout(CATALOG_TIMEOUT_MS);
+	let res: Response;
+	try {
+		res = await fetchFn(url, { ...init, signal });
+	} catch {
+		throw new UpstreamFailure(`${provider.label} unreachable`);
+	}
+	if (!res.ok) throw await failureOf(provider, key, res);
+	try {
+		return await res.json();
+	} catch {
+		throw new UpstreamFailure(`${provider.label} sent an unreadable answer`);
+	}
+}
+
+let modelsCache: { key: string; at: number; models: TtsModel[] } | undefined;
+
+/** Forget the cached model list (tests). */
+export function clearTtsModelsCache(): void {
+	modelsCache = undefined;
+}
+
+/** The TTS-capable models, cached per key for TTS_MODELS_CACHE_MS. Throws UpstreamFailure. */
+async function fetchTtsModels(provider: TtsProvider, key: string, deps: CatalogDeps): Promise<TtsModel[]> {
+	const now = (deps.now ?? Date.now)();
+	if (modelsCache && modelsCache.key === key && now - modelsCache.at < TTS_MODELS_CACHE_MS) return modelsCache.models;
+	const models = provider.parseModels(await getJson(provider, key, deps.fetchFn ?? defaultFetch, provider.modelsRequest({ key })));
+	modelsCache = { key, at: now, models };
+	return models;
+}
+
+/** GET /api/tts/voices: every voice on the account, cloned ones included → `[{ id, name, category }]`. */
+export async function listTtsVoices(deps: CatalogDeps = {}): Promise<Response> {
+	const provider = resolveTtsProvider();
+	const key = (deps.getKey ?? keyValue)(provider.keyId);
+	if (!key) return keylessResponse(provider);
+	const fetchFn = deps.fetchFn ?? defaultFetch;
+	try {
+		const voices: TtsVoice[] = [];
+		let pageToken: string | undefined;
+		for (let page = 0; page < MAX_VOICE_PAGES; page++) {
+			const parsed = provider.parseVoices(await getJson(provider, key, fetchFn, provider.voicesRequest({ key, pageToken })));
+			voices.push(...parsed.voices);
+			if (!parsed.next || parsed.next === pageToken) break;
+			pageToken = parsed.next;
+		}
+		return Response.json(voices, { headers: { "Cache-Control": "no-store" } });
+	} catch (error) {
+		return upstreamResponse(error);
+	}
+}
+
+/** GET /api/tts/models: the TTS-capable models → `[{ id, name, maxChars }]`. */
+export async function listTtsModels(deps: CatalogDeps = {}): Promise<Response> {
+	const provider = resolveTtsProvider();
+	const key = (deps.getKey ?? keyValue)(provider.keyId);
+	if (!key) return keylessResponse(provider);
+	try {
+		return Response.json(await fetchTtsModels(provider, key, deps), { headers: { "Cache-Control": "no-store" } });
+	} catch (error) {
+		return upstreamResponse(error);
+	}
+}
+
 /** POST /api/tts's body: `{ text, voiceId?, modelId? }` → streamed audio or an error response. */
-export async function speak(body: unknown, deps: SpeakDeps = {}): Promise<Response> {
+export async function speak(body: unknown, deps: CatalogDeps = {}): Promise<Response> {
 	const provider = resolveTtsProvider();
 	const { text, voiceId, modelId } = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
 	if (typeof text !== "string" || text.trim() === "") return badRequest("text is required");
 	if (text.length > TTS_MAX_TEXT_CHARS) return badRequest(`text is over the ${TTS_MAX_TEXT_CHARS}-character limit`);
-	if (voiceId !== undefined && !(typeof voiceId === "string" && PLAIN_ID.test(voiceId))) return badRequest("invalid voiceId");
-	if (modelId !== undefined && !(typeof modelId === "string" && PLAIN_ID.test(modelId))) return badRequest("invalid modelId");
+	if (voiceId !== undefined && !isPlainTtsId(voiceId)) return badRequest("invalid voiceId");
+	if (modelId !== undefined && !isPlainTtsId(modelId)) return badRequest("invalid modelId");
 
 	const key = (deps.getKey ?? keyValue)(provider.keyId);
-	if (!key) {
-		return Response.json(
-			{
-				message: `No ${provider.keyId} — add it to auth.json (desktop) or .env.local (dev).`,
-				keyless: provider.keyId,
-			},
-			{ status: 503 },
-		);
-	}
+	if (!key) return keylessResponse(provider);
 
-	const fetchFn: FetchLike = deps.fetchFn ?? ((url, init) => fetch(url, init));
+	// The model actually used: the request's if the account lists it, else the
+	// default/fallback. An unavailable list never blocks playback.
+	const listed = await fetchTtsModels(provider, key, deps).catch(() => [] as TtsModel[]);
+	const resolvedModel = resolveTtsModel(modelId as string | undefined, listed.map((m) => m.id));
+
+	const fetchFn = deps.fetchFn ?? defaultFetch;
 	const { url, init } = provider.request({
 		key,
 		text,
 		voiceId: (voiceId as string | undefined) ?? provider.defaultVoiceId,
-		modelId: (modelId as string | undefined) ?? provider.defaultModelId,
+		modelId: resolvedModel,
 	});
 	let upstream: Response;
 	try {
@@ -132,16 +308,7 @@ export async function speak(body: unknown, deps: SpeakDeps = {}): Promise<Respon
 	} catch {
 		return Response.json({ message: `${provider.label} unreachable` }, { status: 502 });
 	}
-	if (!upstream.ok || !upstream.body) {
-		const detail = scrub(provider.errorDetail(await upstream.text().catch(() => "")), key).slice(0, 160);
-		return Response.json(
-			{
-				message: `${provider.label} error (${upstream.status})${detail ? `: ${detail}` : ""}`,
-				upstreamStatus: upstream.status,
-			},
-			{ status: 502 },
-		);
-	}
+	if (!upstream.ok || !upstream.body) return upstreamResponse(await failureOf(provider, key, upstream));
 	return new Response(upstream.body, {
 		status: 200,
 		headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" },
