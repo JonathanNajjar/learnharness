@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
-	DEFAULT_TTS_VOICE_ID, keyRowTarget, resolveTtsModel,
+	DEFAULT_TTS_VOICE_ID, keyRowTarget, resolveTtsModel, resolveTtsVoice,
 	type TtsModel, type TtsVoice,
 } from "@/src/core";
+import { MenuShell } from "@/components/menu-shell";
 import { Hint } from "@/components/ui/hint";
-import { SettingsRow, ThinSelect } from "@/components/settings/controls";
+import { SettingsMenuTrigger, SettingsRow, ThinSelect } from "@/components/settings/controls";
+import { SearchMenuList } from "@/components/settings/search-menu-list";
 import { useSettingsDialog } from "@/components/settings/settings-dialog";
 import { useReadAloudSettings } from "@/components/read-aloud-preference";
 
@@ -67,7 +69,7 @@ export function ReadAloudSection() {
 				Read aloud needs an ElevenLabs key
 			</button>
 		) : <>
-			<VoiceRow state={voices} saved={voiceId} disabled={saving || !loaded} onChange={(v) => void saveVoice(v)} error={error} />
+			<VoiceRow state={voices} saved={voiceId} disabled={saving || !loaded} onChange={saveVoice} error={error} />
 			<ModelRow state={models} saved={modelId} disabled={saving || !loaded} onChange={(m) => void saveModel(m)} error={error} />
 		</>}
 		{error && !keyless && <p role="alert" data-testid="read-aloud-save-error" className="text-xs text-destructive">{error}</p>}
@@ -79,20 +81,106 @@ function ListError({ testid, message }: { testid: string; message: string }) {
 }
 
 function VoiceRow({ state, saved, disabled, onChange, error }: {
-	state: Loaded<TtsVoice>; saved: string | undefined; disabled: boolean; onChange: (id: string) => void; error: string | null;
+	state: Loaded<TtsVoice>; saved: string | undefined; disabled: boolean; onChange: (id: string) => Promise<boolean>; error: string | null;
 }) {
 	if (state.status === "error") return <SettingsRow label="Voice" testid="row-read-aloud-voice"><ListError testid="read-aloud-voices-error" message={state.message} /></SettingsRow>;
-	const value = saved ?? DEFAULT_TTS_VOICE_ID;
-	const items = state.status === "ready" ? state.items : [];
-	const known = items.some((v) => v.id === value);
+	const items = state.status === "ready" ? state.items : undefined;
+	// What actually plays: a saved voice no longer on the account shows Alice
+	// (shown only, never written back).
+	const value = resolveTtsVoice(saved, items?.map((v) => v.id) ?? []);
+	const label = items === undefined ? "Loading voices…" : items.find((v) => v.id === value)?.name ?? (value === DEFAULT_TTS_VOICE_ID ? "Alice" : value);
 	return <SettingsRow label="Voice" testid="row-read-aloud-voice">
-		<Hint label={error ?? "Read aloud voice"} side="top">
-			<ThinSelect value={value} ariaLabel="Read aloud voice" testid="read-aloud-voice" disabled={disabled || state.status !== "ready"} onChange={onChange}>
-				{!known && <option value={value}>{state.status === "loading" ? "Loading voices…" : value === DEFAULT_TTS_VOICE_ID ? "Alice (default)" : `${value} (not on this account)`}</option>}
-				{items.map((v) => <option key={v.id} value={v.id}>{v.category ? `${v.name} (${v.category})` : v.name}</option>)}
-			</ThinSelect>
-		</Hint>
+		<VoicePicker items={items} value={value} label={label} disabled={disabled} onChange={onChange} error={error} />
 	</SettingsRow>;
+}
+
+/** The voice menu: the app's searchable menu (as the dictation language
+ *  picker) over the account's voices, name with the category as quiet text. */
+function VoicePicker({ items, value, label, disabled, onChange, error }: {
+	items: readonly TtsVoice[] | undefined; value: string; label: string; disabled: boolean;
+	onChange: (id: string) => Promise<boolean>; error: string | null;
+}) {
+	const [open, setOpen] = useState(false);
+	const triggerRef = useRef<HTMLButtonElement>(null);
+	const unavailable = items === undefined;
+
+	useEffect(() => { if (unavailable) setOpen(false); }, [unavailable]);
+	useEffect(() => {
+		if (!open) return;
+		const onPointerDown = (event: PointerEvent) => {
+			const target = event.target as Element;
+			if (target instanceof Element && target.closest('[data-testid="read-aloud-voice-menu"]')) return;
+			if (!triggerRef.current?.contains(target)) setOpen(false);
+		};
+		document.addEventListener("pointerdown", onPointerDown);
+		return () => document.removeEventListener("pointerdown", onPointerDown);
+	}, [open]);
+	const closeOnEscape = (event: ReactKeyboardEvent) => {
+		if (event.key !== "Escape") return;
+		event.preventDefault();
+		event.stopPropagation();
+		setOpen(false);
+		triggerRef.current?.focus();
+	};
+	const pick = async (voice: TtsVoice) => {
+		if (unavailable) return;
+		if (await onChange(voice.id)) {
+			setOpen(false);
+			triggerRef.current?.focus();
+		}
+	};
+
+	return <>
+		<Hint label={error ?? `Read aloud voice: ${label}`} side="top">
+			<SettingsMenuTrigger
+				ref={triggerRef}
+				value={label}
+				data-testid="read-aloud-voice"
+				aria-label={`Read aloud voice: ${label}`}
+				aria-expanded={open && !unavailable}
+				disabled={disabled || unavailable}
+				onKeyDown={(event) => { if (open) closeOnEscape(event); }}
+				onClick={() => setOpen((v) => !v)}
+				className="min-w-20 max-w-[65%]"
+			/>
+		</Hint>
+		{open && !unavailable && <MenuShell
+			anchorRef={triggerRef}
+			testid="read-aloud-voice-menu"
+			preferredSide="down"
+			menuClass="flex w-72 max-w-[calc(100vw-1rem)] flex-col rounded-xl border border-border bg-card p-2 text-xs shadow-xl"
+		>
+			<div onKeyDown={(event) => {
+				closeOnEscape(event);
+				if (event.key === "Enter") {
+					// Empty search results must not submit the composer, but a
+					// focused option button still needs Enter's native click.
+					if (event.target instanceof HTMLInputElement) event.preventDefault();
+					event.stopPropagation();
+				}
+			}}>
+				{error && <div role="alert" className="mb-1.5 text-destructive">{error}</div>}
+				<SearchMenuList
+					items={items}
+					itemKey={(v) => v.id}
+					searchTerms={(v) => [v.name, v.category]}
+					isSelected={(v) => v.id === value}
+					onPick={(v) => { void pick(v); }}
+					disabled={disabled}
+					searchTestid="read-aloud-voice-search"
+					listTestid="read-aloud-voice-list"
+					optionTestid={(v) => `read-aloud-voice-${v.id}`}
+					ariaLabel="Search voices"
+					placeholder="Search voices…"
+					empty="No voices match."
+					renderItem={(v) => <>
+						<span className="truncate text-card-foreground">{v.name}</span>
+						{v.category && <span className="truncate text-muted-foreground">{v.category}</span>}
+					</>}
+				/>
+			</div>
+		</MenuShell>}
+	</>;
 }
 
 function ModelRow({ state, saved, disabled, onChange, error }: {

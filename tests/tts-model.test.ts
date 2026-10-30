@@ -5,7 +5,23 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { isPlainTtsId, resolveTtsModel } from "../src/core/index.ts";
+import { isPlainTtsId, resolveTtsModel, resolveTtsVoice } from "../src/core/index.ts";
+
+describe("resolveTtsVoice", () => {
+	const ALICE = "Xb7hH8MSUJpSbSDYk0k2";
+	const table: Array<[string, string | undefined, string[], string]> = [
+		["saved and listed", "clone1", [ALICE, "clone1"], "clone1"],
+		["unset, Alice listed", undefined, [ALICE, "clone1"], ALICE],
+		["saved no longer on the account: Alice", "gone", [ALICE, "clone1"], ALICE],
+		["unset, Alice not listed: still Alice", undefined, ["clone1"], ALICE],
+		["saved unlisted and Alice not listed: Alice", "gone", ["clone1"], ALICE],
+		["list unavailable, saved is trusted", "clone1", [], "clone1"],
+		["list unavailable, nothing saved", undefined, [], ALICE],
+	];
+	for (const [name, saved, listed, expected] of table) {
+		it(name, () => assert.equal(resolveTtsVoice(saved, listed), expected));
+	}
+});
 
 describe("resolveTtsModel", () => {
 	const table: Array<[string, string | undefined, string[], string]> = [

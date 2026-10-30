@@ -34,6 +34,17 @@ export interface TtsModel {
 }
 
 /**
+ * The voice playback uses. A saved voice that is listed wins; otherwise Alice
+ * (a voice removed from the account never silences playback). With no list
+ * (unavailable), trust `saved`, else Alice.
+ */
+export function resolveTtsVoice(saved: string | undefined, listedIds: readonly string[]): string {
+	if (listedIds.length === 0) return saved ?? DEFAULT_TTS_VOICE_ID;
+	if (saved !== undefined && listedIds.includes(saved)) return saved;
+	return DEFAULT_TTS_VOICE_ID;
+}
+
+/**
  * The model playback uses. A saved model that is listed wins; otherwise
  * eleven_v4_turbo if listed, else eleven_flash_v2_5, else the first listed.
  * With no list (unavailable), trust `saved`, else the default.
