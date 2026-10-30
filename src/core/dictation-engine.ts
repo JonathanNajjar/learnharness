@@ -1,4 +1,4 @@
-import { deepgramListenUrl, type DictationLanguage } from "./dictation.ts";
+import { deepgramListenUrl, elevenLabsLanguageCode, type DictationLanguage } from "./dictation.ts";
 import type { DictationProviderId } from "./dictation-provider.ts";
 
 /** What one incoming socket message means to the dictation hook. */
@@ -7,9 +7,11 @@ export type DictationParsed = {
 	finals: string[];
 	/** A provider error to surface; the hook ends the run with it. */
 	error?: string;
-	/** This message alone says the stream is finished (the hook finalizes and
-	 *  closes the socket). Providers that finish on a close code leave it unset. */
-	finished?: boolean;
+	/** After Stop, this message is the kind that can end the run: the hook
+	 *  (re)starts a short quiet timer and finalizes (flush + close) when no
+	 *  further message arrives before it fires. Providers that finish on a
+	 *  close code leave it unset. */
+	settles?: boolean;
 };
 
 /** The provider-specific half of dictation: everything about one streaming
@@ -93,15 +95,16 @@ const SILENCE_100MS = new Uint8Array(3200);
 
 /** ElevenLabs Scribe realtime: base64 JSON audio chunks, the token in the URL
  *  query, VAD-committed phrases, and a client-side close — the server never
- *  closes after the last commit. The run is finished when the commit we
- *  request at Stop answers, so an engine is PER RUN (one fresh instance each
- *  time the hook starts a dictation). */
+ *  closes after the last commit. After Stop, every commit (and the "no new
+ *  audio" notice) settles; the hook ends the run once the stream goes quiet,
+ *  since a late VAD commit can precede the Stop commit. An engine is PER RUN
+ *  (one fresh instance each time the hook starts a dictation). */
 export function createElevenLabsEngine(): DictationEngine {
 	let commitRequested = false;
 	const chunk = (audio: Uint8Array, commit: boolean) =>
 		JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: base64(audio), commit, sample_rate: 16000 });
 	return {
-		socket(token) {
+		socket(token, language) {
 			const params = new URLSearchParams({
 				token,
 				model_id: "scribe_v2_realtime",
@@ -109,6 +112,9 @@ export function createElevenLabsEngine(): DictationEngine {
 				commit_strategy: "vad",
 				vad_silence_threshold_secs: "0.3",
 			});
+			// Omitted = Scribe auto-detects ("multi", unsupported languages).
+			const languageCode = elevenLabsLanguageCode(language);
+			if (languageCode) params.set("language_code", languageCode);
 			return { url: `wss://api.elevenlabs.io/v1/speech-to-text/realtime?${params}`, protocols: [] };
 		},
 		encodeFrame: (frame) => chunk(new Uint8Array(frame), false),
@@ -123,12 +129,14 @@ export function createElevenLabsEngine(): DictationEngine {
 			if (type === "committed_transcript" || type === "committed_transcript_with_timestamps") {
 				const text: unknown = msg.text;
 				const finals = typeof text === "string" && text ? [text] : [];
-				return commitRequested ? { finals, finished: true } : { finals };
+				// After Stop a commit may be an EARLIER phrase's late VAD commit,
+				// not the Stop commit — so it only settles, never finishes.
+				return commitRequested ? { finals, settles: true } : { finals };
 			}
 			if (typeof type === "string" && type in ELEVENLABS_ERRORS) {
 				// The Stop commit carries silence when VAD already committed the
 				// last phrase: "nothing new to commit" means the run is complete.
-				if (commitRequested && type === "insufficient_audio_activity") return { finals: [], finished: true };
+				if (commitRequested && type === "insufficient_audio_activity") return { finals: [], settles: true };
 				return { finals: [], error: ELEVENLABS_ERRORS[type] };
 			}
 			return { finals: [] };
