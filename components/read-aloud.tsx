@@ -6,6 +6,7 @@ import { useSettingsDialog } from "@/components/settings/settings-dialog";
 import { Hint } from "@/components/ui/hint";
 import { createReadAloudPlayer, type ReadAloudPlayer, type ReadAloudSnapshot } from "@/components/read-aloud-player";
 import { isDictationActive, subscribeDictationActive } from "@/components/dictation-state";
+import { useReadAloudSettings } from "@/components/read-aloud-preference";
 import { keyRowTarget, markdownToSpeechChunks } from "@/src/core";
 
 /**
@@ -69,6 +70,7 @@ export function ListenButton({
 	const p = player ?? readAloudPlayer();
 	const { sourceId: playing, error } = useReadAloud(p);
 	const { open: openSettings } = useSettingsDialog();
+	const { voiceId, modelId } = useReadAloudSettings();
 	const isPlaying = playing === sourceId;
 	const failure = error?.sourceId === sourceId ? error : null;
 
@@ -79,7 +81,7 @@ export function ListenButton({
 					type="button"
 					onClick={() => {
 						if (isPlaying) p.stop();
-						else void p.play(sourceId, markdownToSpeechChunks(markdown));
+						else void p.play(sourceId, markdownToSpeechChunks(markdown), { voiceId, modelId });
 					}}
 					aria-label={isPlaying ? "Stop reading aloud" : "Read aloud"}
 					data-testid="listen-button"

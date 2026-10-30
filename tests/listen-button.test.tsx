@@ -29,13 +29,18 @@ class FakeAudio implements AudioLike {
 
 type TtsHandler = (text: string) => Response | Promise<Response>;
 
-async function fixture(handler: TtsHandler, messages: Array<{ id: string; markdown: string }>) {
+async function fixture(
+	handler: TtsHandler,
+	messages: Array<{ id: string; markdown: string }>,
+	readAloud?: { voiceId?: string; modelId?: string },
+) {
 	const { window: win, document: doc } = parseHTML("<html><body><div id='root'></div></body></html>");
 	Object.assign(doc, { oninput: null });
 	Object.assign(win, { innerWidth: 1280, innerHeight: 900 });
 	win.HTMLElement.prototype.focus = function () {};
 	win.HTMLElement.prototype.scrollIntoView = () => {};
 	const requested: string[] = [];
+	const bodies: Array<Record<string, unknown>> = [];
 	const keyStatuses = (): AuthKeyStatus[] => AUTH_KEYS.map((info) => ({ id: info.id, info, present: false, masked: null, source: "none", shadowedByEnv: false }));
 	const previous = new Map<string, PropertyDescriptor | undefined>();
 	for (const [name, value] of Object.entries({
@@ -48,7 +53,7 @@ async function fixture(handler: TtsHandler, messages: Array<{ id: string; markdo
 		// The settings dialog's own reads (the keyless deep link opens it).
 		fetch: async (url: string) => {
 			if (url === "/api/keys") return Response.json({ keys: keyStatuses(), providers: [] });
-			if (url === "/api/settings") return Response.json({ settings: { version: 1, dictation: { language: "en" } } });
+			if (url === "/api/settings") return Response.json({ settings: { version: 1, dictation: { language: "en" }, ...(readAloud ? { readAloud } : {}) } });
 			return Response.json({});
 		},
 	})) {
@@ -63,7 +68,9 @@ async function fixture(handler: TtsHandler, messages: Array<{ id: string; markdo
 	};
 	const player = createReadAloudPlayer({
 		fetch: (async (_url: string, init: RequestInit) => {
-			const text = (JSON.parse(init.body as string) as { text: string }).text;
+			const body = JSON.parse(init.body as string) as { text: string };
+			bodies.push(body);
+			const text = body.text;
 			requested.push(text);
 			return handler(text);
 		}) as unknown as typeof fetch,
@@ -84,7 +91,7 @@ async function fixture(handler: TtsHandler, messages: Array<{ id: string; markdo
 		);
 	});
 	await settle();
-	return { requested, player };
+	return { requested, bodies, player };
 }
 
 const within = (id: string) => document.querySelector<HTMLElement>(`[data-message="${id}"]`)!;
@@ -114,6 +121,20 @@ test("clicking Listen reads the message's speech text and the button turns into 
 	await click(button);
 	assert.equal(byTest("listen-button")!.getAttribute("aria-label"), "Read aloud");
 	assert.equal(player.getSnapshot().sourceId, null);
+});
+
+test("Listen requests carry the saved voice and model; nothing saved sends neither", async () => {
+	const saved = await fixture(AUDIO, [{ id: "m1", markdown: "Hello." }], { voiceId: "VoiceId123", modelId: "eleven_flash_v2_5" });
+	await click(byTest("listen-button"));
+	await settle();
+	assert.deepEqual(saved.bodies, [{ text: "Hello.", voiceId: "VoiceId123", modelId: "eleven_flash_v2_5" }]);
+	await dispose!();
+	restore!();
+	dispose = restore = undefined;
+	const unset = await fixture(AUDIO, [{ id: "m1", markdown: "Hello." }]);
+	await click(byTest("listen-button"));
+	await settle();
+	assert.deepEqual(unset.bodies, [{ text: "Hello." }], "absent stays absent: the server defaults");
 });
 
 test("starting another message's Listen stops the first one's button", async () => {

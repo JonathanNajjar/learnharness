@@ -35,6 +35,7 @@ import type { ChatSettings } from "./contracts/chat.ts";
 import type { SearchEngineId } from "./search.ts";
 import { isDictationLanguage, type DictationLanguage } from "./dictation.ts";
 import { isDictationProvider, type DictationProviderId } from "./dictation-provider.ts";
+import { isPlainTtsId } from "./read-aloud.ts";
 
 /** The schema version this code understands. Bump ONLY for breaking shape
  *  changes (a field renamed/meaning changed); pure additions never bump. */
@@ -459,12 +460,22 @@ export interface CompactionSettings {
 	thresholdTokens?: number;
 }
 
+/** Read aloud (ElevenLabs voice slice 9): which voice and model speak. Absent =
+ *  the default (Alice; the resolved model, see resolveTtsModel). Slice 10 adds
+ *  `autoRead` here; a section PUT replaces the whole section, so every write
+ *  carries all fields. */
+export interface ReadAloudSettings {
+	voiceId?: string;
+	modelId?: string;
+}
+
 /** THE record. Every section optional (delta); unknown top-level keys are
  *  preserved verbatim by the sanitizer (forward-compat with newer records). */
 export interface UserSettings {
 	version: number;
 	general?: GeneralSettings;
 	dictation?: DictationSettings;
+	readAloud?: ReadAloudSettings;
 	/** Explicit app-wide opt-in; absent/invalid is off, including older records. */
 	claudeCode?: { enabled?: boolean };
 	agent?: AgentSettings;
@@ -808,6 +819,16 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 			if (isDictationProvider(provider)) dictation.provider = provider;
 		}
 		out.dictation = dictation;
+	}
+	if (r.readAloud !== undefined) {
+		const raw = r.readAloud;
+		const readAloud: ReadAloudSettings = {};
+		if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+			const { voiceId, modelId } = raw as Record<string, unknown>;
+			if (isPlainTtsId(voiceId)) readAloud.voiceId = voiceId;
+			if (isPlainTtsId(modelId)) readAloud.modelId = modelId;
+		}
+		out.readAloud = readAloud;
 	}
 	if (r.claudeCode !== undefined) {
 		const raw = r.claudeCode;

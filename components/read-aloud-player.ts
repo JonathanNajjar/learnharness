@@ -64,17 +64,21 @@ export interface ReadAloudDeps {
 	revokeObjectURL?: (url: string) => void;
 	/** Text → audio bytes. Defaults to the /api/tts request behind the audio cache. */
 	loadChunk?: ChunkLoader;
-	/** The voice and model for the next play(), read when it starts. Absent
-	 *  fields mean the server's defaults; they are part of the cache key. */
+	/** The voice and model for a play() that passes none, read when it starts.
+	 *  Absent fields mean the server's defaults; they are part of the cache key. */
 	speech?: () => SpeechOptions;
 	/** Whether dictation is live (slice 7). Defaults to never. */
 	isDictationActive?: () => boolean;
 }
 
+/** Per-play request choices (slice 9). Absent = the server's default. The
+ *  same shape the audio cache keys on (slice 8). */
+export type ReadAloudRequestOptions = SpeechOptions;
+
 export interface ReadAloudPlayer {
 	/** Read `chunks` aloud as `sourceId`, stopping whatever played before.
 	 *  Resolves when the source finished, failed or was stopped. */
-	play(sourceId: string, chunks: readonly string[]): Promise<void>;
+	play(sourceId: string, chunks: readonly string[], options?: ReadAloudRequestOptions): Promise<void>;
 	/** Stop now. Idempotent. Leaves an error showing; the next play() clears it. */
 	stop(): void;
 	clearError(): void;
@@ -166,8 +170,9 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 			element.play().catch(unplayable);
 		});
 
-	const run = async (id: number, sourceId: string, chunks: readonly string[], signal: AbortSignal) => {
-		const options = deps.speech?.();
+	const run = async (id: number, sourceId: string, chunks: readonly string[], signal: AbortSignal, requested?: ReadAloudRequestOptions) => {
+		// The play()'s own choice (slice 9) wins; else the player-level supplier.
+		const options = requested ?? deps.speech?.();
 		const loads: Promise<Blob>[] = [];
 		const start = (i: number) => {
 			const load = loadChunk(chunks[i]!, signal, options);
@@ -200,7 +205,7 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 	};
 
 	return {
-		play(sourceId, chunks) {
+		play(sourceId, chunks, options) {
 			halt();
 			if (chunks.length === 0) {
 				if (snapshot.sourceId !== null || snapshot.error !== null) set({ sourceId: null, error: null });
@@ -208,7 +213,7 @@ export function createReadAloudPlayer(deps: ReadAloudDeps = {}): ReadAloudPlayer
 			}
 			controller = new AbortController();
 			set({ sourceId, error: null });
-			return run(generation, sourceId, chunks, controller.signal);
+			return run(generation, sourceId, chunks, controller.signal, options);
 		},
 		stop() {
 			halt();

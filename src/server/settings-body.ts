@@ -21,6 +21,7 @@ import type {
 	CustomModelOverride,
 	GeneralSettings,
 	DictationSettings,
+	ReadAloudSettings,
 	GraphSettings,
 	ModelsSettings,
 	RoleModelOverride,
@@ -29,6 +30,7 @@ import { BACKGROUND_MODEL_ROLES, COMPACTION_THRESHOLD_FLOOR, CUSTOM_MODEL_PIN_FL
 import { WRITABLE_TOOL_KEYS } from "../core/pending.ts";
 import { isDictationLanguage } from "../core/dictation.ts";
 import { isDictationProvider } from "../core/dictation-provider.ts";
+import { isPlainTtsId } from "../core/read-aloud.ts";
 
 /** Parsed-or-rejected — `ok: false` carries the 400's error message. */
 export type SettingsBodyResult<T> =
@@ -405,6 +407,23 @@ export function parseDictationSettingsBody(body: unknown): SettingsBodyResult<Di
 	return { ok: true, settings };
 }
 
+/** readAloud: { voiceId?, modelId? } — plain provider ids (they land in a URL
+ *  path / JSON body). Absent = the default. */
+export function parseReadAloudSettingsBody(body: unknown): SettingsBodyResult<ReadAloudSettings> {
+	const raw = asRecord(body);
+	if (!raw) return { ok: false, error: "Invalid JSON body" };
+	const settings: ReadAloudSettings = {};
+	if (raw.voiceId !== undefined) {
+		if (!isPlainTtsId(raw.voiceId)) return { ok: false, error: "voiceId must be a plain voice id" };
+		settings.voiceId = raw.voiceId;
+	}
+	if (raw.modelId !== undefined) {
+		if (!isPlainTtsId(raw.modelId)) return { ok: false, error: "modelId must be a plain model id" };
+		settings.modelId = raw.modelId;
+	}
+	return { ok: true, settings };
+}
+
 /** The custom endpoint's per-model pins (PATCH /api/custom-provider): the
  *  whole desired map, replace-whole like every section. Strict write side — a
  *  token count must be a whole number at or above the floor (the read side
@@ -455,6 +474,7 @@ export const SETTINGS_SECTIONS = {
 	compaction: parseCompactionSettingsBody,
 	models: parseModelsSettingsBody,
 	dictation: parseDictationSettingsBody,
+	readAloud: parseReadAloudSettingsBody,
 	claudeCode: parseClaudeCodeSettingsBody,
 } as const;
 
