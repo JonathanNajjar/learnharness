@@ -149,6 +149,11 @@ Interface: play(source id, chunks), stop(), the current playing source id (subsc
 - **Listen button**: always visible and muted under every assistant message, hidden on the newest message while a turn is still running (as built in slice 6).
 - **Bare URLs** in a reply are spoken as their host name ("en.wikipedia.org").
 - **Worker-authored wording and behavior kept** (2026-10-29): the dictation "Provider" picker (a simple dropdown showing the provider that would be used even when its key is missing), the ElevenLabs dictation error lines ("ElevenLabs quota exceeded" and the like), the read-aloud error lines ("Read aloud couldn't connect", "Read aloud couldn't play the audio", "Read aloud failed (<status>)"), and leaving unrecognized math operators as-is.
+- **Wave 3 review decisions** (2026-10-29):
+  - A saved read-aloud voice that's no longer on the account falls back to Alice, the same rule as models. The picker shows Alice as the voice actually used.
+  - The voice picker is a searchable menu (the dictation language picker's pattern), not a plain dropdown.
+  - Tagalog (`tl`) dictates with ElevenLabs as Filipino (`fil`).
+  - A live check confirmed realtime Scribe accepts two-letter codes (`language_code=fr` transcribed French exactly).
 - **Key wording signed off** (2026-10-29): the labels "Deepgram (dictation only)" and "ElevenLabs", with the description "Speech key for dictation and read aloud — one key for both". Each group's hint names the four permissions and warns that token creation may need a broader key. The Read aloud group sits between Dictation and Search.
 - The key box appears in both groups and edits one value.
 - Dictation always wins over playback.

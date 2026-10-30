@@ -104,8 +104,12 @@ describe("ElevenLabs Scribe dictation language mapping", () => {
 		assert.equal(mapped("zh-HK"), "yue");
 	});
 
+	it("Tagalog is sent as Filipino (fil), the code Scribe lists", () => {
+		assert.equal(mapped("tl"), "fil");
+	});
+
 	it("a language Scribe does not list falls back to auto-detect", () => {
-		assert.equal(mapped("tl"), undefined);
+		assert.equal(mapped("xx" as DictationLanguage), undefined);
 	});
 
 	it("every dictation language maps to a supported code or auto-detect", () => {
@@ -113,8 +117,8 @@ describe("ElevenLabs Scribe dictation language mapping", () => {
 			const out = mapped(code);
 			assert.ok(out === undefined || ELEVENLABS_SCRIBE_LANGUAGES.has(out), `${code} -> ${out}`);
 		}
-		// Not vacuously all-auto: only multi and Tagalog resolve to auto.
+		// Not vacuously all-auto: only multi resolves to auto.
 		const auto = DICTATION_LANGUAGES.filter(({ code }) => mapped(code) === undefined).map(({ code }) => code);
-		assert.deepEqual(auto, ["multi", "tl"]);
+		assert.deepEqual(auto, ["multi"]);
 	});
 });

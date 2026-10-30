@@ -67,13 +67,13 @@ describe("ElevenLabs dictation engine adapter", () => {
 		assert.deepEqual(protocols, []);
 	});
 
-	it("sends the base language for a regional choice, yue for zh-HK, and omits language_code for multi and unsupported languages", () => {
+	it("sends the base language for a regional choice, yue for zh-HK, fil for Tagalog, and omits language_code for multi", () => {
 		const code = (language: Parameters<DictationEngine["socket"]>[1]) =>
 			new URL(createElevenLabsEngine().socket("t", language).url).searchParams.get("language_code");
 		assert.equal(code("en-GB"), "en");
 		assert.equal(code("zh-HK"), "yue");
 		assert.equal(code("multi"), null);
-		assert.equal(code("tl"), null);
+		assert.equal(code("tl"), "fil");
 	});
 
 	it("leaves Deepgram's URL language handling alone", () => {

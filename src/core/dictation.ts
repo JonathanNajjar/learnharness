@@ -85,7 +85,7 @@ export function isDictationLanguage(value: unknown): value is DictationLanguage 
  * values (ISO 639-1 where one exists, else 639-3: `yue`). The docs list is in
  * ISO 639-3; each entry is its 639-1 equivalent. Languages without a 639-1
  * code that the app never offers are omitted (ast, ceb, ful, lug, kea, luo,
- * nso, umb, fil).
+ * nso, umb); `fil` stays, as Tagalog's target.
  * Source: https://elevenlabs.io/docs/overview/capabilities/speech-to-text
  * ("90+ languages", the page's list; checked 2026-10-29). */
 export const ELEVENLABS_SCRIBE_LANGUAGES: ReadonlySet<string> = new Set([
@@ -94,11 +94,13 @@ export const ELEVENLABS_SCRIBE_LANGUAGES: ReadonlySet<string> = new Set([
 	"ja", "jv", "kn", "kk", "km", "ko", "ku", "ky", "lo", "lv", "ln", "lt", "lb", "mk", "ms", "ml", "mt", "zh",
 	"mi", "mr", "mn", "ne", "no", "oc", "or", "ps", "fa", "pl", "pt", "pa", "ro", "ru", "sr", "sn", "sd", "si",
 	"sk", "sl", "so", "es", "sw", "sv", "ta", "tg", "te", "th", "tr", "uk", "ur", "uz", "vi", "cy", "wo", "xh", "zu",
+	"fil",
 ]);
 
 /** A regional code whose region changes the LANGUAGE, not just the accent. */
 const SCRIBE_REGION_LANGUAGES: Partial<Record<DictationLanguage, string>> = {
 	"zh-HK": "yue", // Cantonese, not Mandarin `zh`
+	tl: "fil", // Scribe lists Filipino, Tagalog's standardized form (owner, 2026-10-29)
 };
 
 /** The Scribe `language_code` for the saved dictation language, or undefined
