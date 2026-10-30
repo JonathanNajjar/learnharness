@@ -31,7 +31,7 @@ import { clearOpeningPrompt, readOpeningPromptEntry, stashOpeningPrompt, OPENING
 import { forwardDockWheel, useDockHeight } from "@/components/dock-height";
 import { QueuedSteersBody, type QueuedSteerLine } from "@/components/queued-steers";
 import { ListenButton, readAloudPlayer } from "@/components/read-aloud";
-import { createAutoRead, finalAssistantStop, listenSourceId, pendingQuestionSource, spokenText, withCollapsed } from "@/components/auto-read";
+import { blockInProgress, createAutoRead, finalAssistantStop, pendingQuestionSource, proseBlocks, withCollapsed } from "@/components/auto-read";
 import { isDictationActive } from "@/components/dictation-state";
 import { useReadAloudSettings } from "@/components/read-aloud-preference";
 import { markdownToSpeechChunks } from "@/src/core";
@@ -1580,9 +1580,17 @@ export function Chat({
 													case "text": {
 														const sourceId = textPartMessageId(part.id);
 														const anchor = sourceId && sourceTextParts.get(sourceId) === part.id ? messageAnchorId(sourceId) : undefined;
+														// Read aloud (ElevenLabs voice slice 6): one Listen button per prose
+														// block, reading only that block (a teaching group merges several
+														// native messages into this one view message). Only the block that
+														// may still be streaming waits; the settled ones above it keep theirs.
+														const blocks = proseBlocks(m, mi);
+														const block = blocks.find((b) => b.partIndex === pi);
+														const writing = blockInProgress(blocks, mi === messages.length - 1, busy);
 														return (
 															<div key={part.id || pi} id={anchor} data-source-message-id={sourceId ?? undefined} className="lh-source-passage">
 																<MessageResponse>{part.text}</MessageResponse>
+																{block && block.sourceId !== writing ? <ListenButton sourceId={block.sourceId} markdown={block.markdown} /> : null}
 															</div>
 														);
 													}
@@ -1642,15 +1650,6 @@ export function Chat({
 												}
 											})}
 										</MessageContent>
-										{/* Read aloud (ElevenLabs voice slice 6): the assistant's TEXT
-										    parts only — never reasoning, tool cards or questions — and
-										    only once the message has settled (the newest one is still
-										    being written while the turn is busy). */}
-										{(() => {
-											if (mi === messages.length - 1 && busy) return null;
-											const spoken = spokenText(m.parts);
-											return spoken ? <ListenButton sourceId={listenSourceId(m, mi)} markdown={spoken} /> : null;
-										})()}
 									</Message>
 									)}
 								</Fragment>

@@ -7,7 +7,10 @@
  * see it end (true -> false). That one rule is what keeps history out: a
  * session opened or reloaded with replies already in it, a record adopted
  * from the server, and a turn that was already running when the view mounted
- * never play. The verdict is taken once, at the end; a skipped reply (setting
+ * never play. What plays is the prose blocks the turn ADDED (proseBlocks: one
+ * Listen source per text part, in order), never ones that existed when it began,
+ * so a teaching group that keeps growing is not reread from its top. The verdict
+ * is taken once, at the end; a skipped reply (setting
  * off, aborted, failed, dictating, nothing to say) is never revisited.
  *
  * Dock questions (slice 11) ride the same controller. A question counts as
@@ -26,7 +29,7 @@ import { parseAskInput, parseExplainInput, parseQuizInput, questionPromptMarkdow
 export interface AutoReadMessage {
 	id: string;
 	role: string;
-	parts: ReadonlyArray<{ type: string; text?: string }>;
+	parts: ReadonlyArray<{ type: string; id?: string; text?: string }>;
 }
 
 /** The pending dock question, as the controller needs it. */
@@ -59,17 +62,33 @@ export interface AutoReadObservation {
 	question?: AutoReadQuestion | null;
 }
 
-/** The text of a message the Listen button reads: its text parts only (never
- *  reasoning or tool cards), blank ones dropped, joined by a blank line. */
-export function spokenText(parts: AutoReadMessage["parts"]): string {
-	return parts
-		.flatMap((part) => (part.type === "text" && part.text?.trim() ? [part.text] : []))
-		.join("\n\n");
+/** One prose block of a message: what one Listen button reads. */
+export interface ProseBlock {
+	/** Stable and unique per block: the view part id (`<native message id>-t<n>`),
+	 *  which survives re-projection. A part without one falls back to its position. */
+	sourceId: string;
+	markdown: string;
+	/** Where the text part sits in the message, so a renderer can put the button under it. */
+	partIndex: number;
 }
 
-/** The Listen button's source id for the message at `index`. */
-export function listenSourceId(message: { id: string }, index: number): string {
-	return message.id || `m-${index}`;
+/** The message's prose blocks, in order: its text parts only (never reasoning
+ *  or tool cards), blank ones dropped. A teaching group merges several native
+ *  messages into one view message, so the Listen button and the auto-read
+ *  controller both work per block (never the whole group) through this one
+ *  function and so can never disagree about ids or text. */
+export function proseBlocks(message: { id: string; parts: AutoReadMessage["parts"] }, index: number): ProseBlock[] {
+	const owner = message.id || `m-${index}`;
+	return message.parts.flatMap((part, i) =>
+		part.type === "text" && part.text?.trim() ? [{ sourceId: part.id || `${owner}-p${i}`, markdown: part.text, partIndex: i }] : [],
+	);
+}
+
+/** The block that may still be streaming: the newest message's final one while
+ *  a turn is busy (the view marks every text part "done", so position is the
+ *  only signal). Its Listen button waits; settled blocks above it keep theirs. */
+export function blockInProgress(blocks: readonly ProseBlock[], newest: boolean, busy: boolean): string | null {
+	return newest && busy ? (blocks[blocks.length - 1]?.sourceId ?? null) : null;
 }
 
 /** The dock Listen button's source id for a question: never a message's id. */
@@ -131,9 +150,9 @@ export function createAutoRead({ play, dictating }: {
 }): AutoRead {
 	let seen = false;
 	let wasBusy = false;
-	/** The spoken text of every assistant message when the turn began; null
-	 *  for a turn the view did not see begin. */
-	let before: Map<string, string> | null = null;
+	/** The ids of every prose block when the turn began; null for a turn the
+	 *  view did not see begin. */
+	let before: Set<string> | null = null;
 	const played = new Set<string>();
 	/** Every question occurrence this view has observed. */
 	const knownQuestions = new Set<string>();
@@ -145,21 +164,16 @@ export function createAutoRead({ play, dictating }: {
 	let epoch = 0;
 
 	const spokenById = (messages: readonly AutoReadMessage[]) => {
-		const map = new Map<string, string>();
-		messages.forEach((m, i) => { if (m.role === "assistant") map.set(listenSourceId(m, i), spokenText(m.parts)); });
-		return map;
+		const ids = new Set<string>();
+		messages.forEach((m, i) => { if (m.role === "assistant") for (const b of proseBlocks(m, i)) ids.add(b.sourceId); });
+		return ids;
 	};
 
-	/** The final reply, if it has new text that was not played already. */
-	const replyToRead = (o: AutoReadObservation, start: Map<string, string>): QueuedRead | null => {
-		const index = o.messages.length - 1;
-		const last = o.messages[index];
-		if (!last || last.role !== "assistant") return null;
-		const sourceId = listenSourceId(last, index);
-		const spoken = spokenText(last.parts);
-		if (!spoken || played.has(sourceId) || start.get(sourceId) === spoken) return null;
-		return { sourceId, markdown: spoken };
-	};
+	/** The prose blocks the turn added, in order: none that existed when it began
+	 *  or that were played already. */
+	const blocksToRead = (o: AutoReadObservation, start: Set<string>): QueuedRead[] =>
+		o.messages.flatMap((m, i) => (m.role === "assistant" ? proseBlocks(m, i) : []))
+			.filter((b) => !start.has(b.sourceId) && !played.has(b.sourceId));
 
 	/** Play in order; each step starts only if the one before it played to its end. */
 	const playInOrder = (queue: readonly QueuedRead[]) => {
@@ -209,10 +223,9 @@ export function createAutoRead({ play, dictating }: {
 			if (o.finalStop === "error" || o.finalStop === "aborted") return;
 			if (dictating()) return;
 			const queue: QueuedRead[] = [];
-			const reply = replyToRead(o, start);
-			if (reply) {
-				played.add(reply.sourceId);
-				queue.push(reply);
+			for (const block of blocksToRead(o, start)) {
+				played.add(block.sourceId);
+				queue.push(block);
 			}
 			if (announce) queue.push({ sourceId: announce.sourceId, markdown: announce.markdown, questionKey: announce.key });
 			if (queue.length > 0) playInOrder(queue);
