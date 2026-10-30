@@ -189,6 +189,7 @@ flowchart LR
         LLM["LLM engines — pi-ai/OpenRouter via piEngineFor"]
         HEAD["headless Chrome — demo verify · SVG render"]
         DEEP["Deepgram STT — token-minting route, browser-side WebSocket"]
+        TTS["ElevenLabs read aloud — /api/tts server proxy, key stays server-side"]
         WEB["web tools — Google CSE + Readability/Jina (researcher)"]
     end
 
@@ -205,6 +206,7 @@ flowchart LR
     SESS --> HEAD
     SESS --> WEB
     BROWSER --> DEEP
+    HTTP --> TTS
 ```
 
 ---
@@ -413,6 +415,7 @@ flowchart LR
     subgraph OUTSIDE["outside the process"]
         OR["OpenRouter (BYOK key from auth.json, env-injected — never argv)"]
         DG["Deepgram STT (browser-direct WebSocket)"]
+        EL["ElevenLabs text-to-speech (read aloud, via the /api/tts proxy)"]
         GCSE["Google CSE / Jina (researcher tools)"]
         CHROME["system Chrome (headless: demo verify · SVG render)"]
         DISK["data/ ledgers (via LH_DATA_DIR seam)"]
@@ -422,12 +425,20 @@ flowchart LR
     NEXT --> CHROME
     NEXT --> DISK
     REND --> DG
+    NEXT -->|"POST /v1/text-to-speech/{voice}/stream<br/>xi-api-key — the key never leaves this process"| EL
     REND -->|"fetch /api/*"| NEXT
 ```
 
 The Electron main is a launcher + credential/security guard, never a host for teaching or inference logic: single-instance lock, deny-by-default permissions, origin-pinned navigation, sandboxed renderer. All Next.js code runs unchanged in a child process (`output: "standalone"`), relocated by the `LH_DATA_DIR` seam (also the test seam — `data-dir-seam.test.ts` covers it, including a fresh-child-process case). The build hard-fails if repo `data/` would leak into the bundle or if prompt assets fall out of the trace (`scripts/build-server.mjs`).
 
 ---
+
+### 8.0 Voice boundaries (dictation and read aloud)
+
+The two voice directions cross the process boundary differently, but the real key stays server-side in both:
+
+- **Dictation** (Deepgram): the renderer asks `/api/stt/token` for a short-lived token and opens the provider WebSocket itself; audio never loops through the server.
+- **Read aloud** (ElevenLabs): the renderer never talks to ElevenLabs at all. Each assistant message's Listen button turns its markdown into speech chunks in the browser-safe core (`src/core/speech-text.ts`: prose flattened, code/diagram/table/display-math replaced by one spoken marker each, inline math read as words, a short first chunk) and POSTs them one at a time to `POST /api/tts`. The route (`src/server/tts.ts`) reads `ELEVENLABS_API_KEY` from the key store, calls `POST /v1/text-to-speech/{voice}/stream?output_format=mp3_44100_64` with the `xi-api-key` header, and streams the MP3 body straight back as `audio/mpeg`. The provider sits behind a small `TtsProvider` seam so another could be added later. Errors keep their meaning: 400 bad text (empty, or over the 2500-character cap), 503 keyless (`{ message, keyless }`), 502 upstream (with ElevenLabs' status), and the key never appears in a response. The client player (`components/read-aloud-player.ts`) owns one audio element per window, plays one source at a time, and requests chunk n+1 while chunk n plays; the text of the reply, not the key, is what reaches ElevenLabs. Voice usage is billed by ElevenLabs and is not in the cost meter.
 
 ### 8.1 Subscription connection boundary
 
