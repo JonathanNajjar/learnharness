@@ -80,7 +80,7 @@ export interface EffectiveSettings {
 	/** The voice always resolves (Alice when unset). The model stays absent
 	 *  until chosen: its default depends on the account's live model list
 	 *  (resolveTtsModel). */
-	readAloud: { voiceId: string } & Pick<ReadAloudSettings, "modelId">;
+	readAloud: { voiceId: string; autoRead: boolean } & Pick<ReadAloudSettings, "modelId">;
 	agent: {
 		models: Record<BackgroundModelRole, EffectiveModelSpec | undefined>;
 		/** Delta map as stored — consumers resolve absent key → enabled. */
@@ -198,6 +198,7 @@ export function resolveSettings(record: UserSettings | null): EffectiveSettings 
 		readAloud: {
 			voiceId: record?.readAloud?.voiceId ?? DEFAULT_TTS_VOICE_ID,
 			modelId: record?.readAloud?.modelId,
+			autoRead: record?.readAloud?.autoRead === true,
 		},
 		agent: {
 			models,

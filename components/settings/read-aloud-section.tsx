@@ -6,7 +6,7 @@ import {
 	type TtsModel, type TtsVoice,
 } from "@/src/core";
 import { Hint } from "@/components/ui/hint";
-import { SettingsRow, ThinSelect } from "@/components/settings/controls";
+import { SettingsRow, ThinSelect, Toggle } from "@/components/settings/controls";
 import { useSettingsDialog } from "@/components/settings/settings-dialog";
 import { useReadAloudSettings } from "@/components/read-aloud-preference";
 
@@ -48,7 +48,7 @@ function useList<T>(url: string, what: string): Loaded<T> {
  *  (Alice; the resolved model), so the picker never claims otherwise. */
 export function ReadAloudSection() {
 	const { open: openSettings } = useSettingsDialog();
-	const { voiceId, modelId, loaded, saving, error, saveVoice, saveModel } = useReadAloudSettings();
+	const { voiceId, modelId, loaded, saving, error, autoRead, saveVoice, saveModel, saveAutoRead } = useReadAloudSettings();
 	const voices = useList<TtsVoice>("/api/tts/voices", "voices");
 	const models = useList<TtsModel>("/api/tts/models", "models");
 	const keyless = voices.status === "keyless" || models.status === "keyless";
@@ -57,6 +57,9 @@ export function ReadAloudSection() {
 		<p data-testid="read-aloud-billing-note" className="text-xs text-muted-foreground/70">
 			ElevenLabs bills your account separately, so read aloud is not shown in the cost meter.
 		</p>
+		<SettingsRow label="Read replies aloud" hint="Plays each new reply once it has finished." testid="row-read-aloud-auto">
+			<Toggle checked={autoRead} disabled={saving || !loaded} label="Read replies aloud" onChange={(on) => void saveAutoRead(on)} />
+		</SettingsRow>
 		{keyless ? (
 			<button
 				type="button"

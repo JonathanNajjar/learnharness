@@ -10,6 +10,8 @@ import { notifySettingsSaved, onSettingsSaved } from "@/components/settings-sign
 const INITIAL = {
 	voiceId: undefined as string | undefined,
 	modelId: undefined as string | undefined,
+	/** Absent until chosen; the hook reads absent as off. */
+	autoRead: undefined as boolean | undefined,
 	/** False until the record has been read once. */
 	loaded: false,
 	saving: false,
@@ -20,7 +22,7 @@ const INITIAL = {
  *  transport tests isolated from the window singleton below.
  *
  *  A section PUT replaces the WHOLE section, so every write carries every
- *  field (slice 10 adds `autoRead` to `ReadAloudSettings` and to `put`). */
+ *  field: voice, model and auto-read each read the other two from the snapshot. */
 export function createReadAloudStore(request: typeof fetch, saved: () => void = () => {}) {
 	let snapshot = INITIAL;
 	let reading: Promise<void> | null = null;
@@ -40,7 +42,7 @@ export function createReadAloudStore(request: typeof fetch, saved: () => void = 
 				const body = await res.json() as { settings: UserSettings | null };
 				const record = sanitizeUserSettings(body.settings);
 				if (writing) return; // the write's confirmed answer is newer
-				publish({ voiceId: record?.readAloud?.voiceId, modelId: record?.readAloud?.modelId, loaded: true, error: null });
+				publish({ voiceId: record?.readAloud?.voiceId, modelId: record?.readAloud?.modelId, autoRead: record?.readAloud?.autoRead, loaded: true, error: null });
 			} catch {
 				// Stay on the defaults: a failed read must not block Listen.
 				publish({ loaded: true, error: "Could not load the read-aloud settings." });
@@ -64,8 +66,8 @@ export function createReadAloudStore(request: typeof fetch, saved: () => void = 
 				if (!res.ok) throw new Error();
 				const body = await res.json() as { settings: UserSettings };
 				const confirmed = body.settings?.readAloud;
-				if (!confirmed || confirmed.voiceId !== next.voiceId || confirmed.modelId !== next.modelId) throw new Error();
-				publish({ voiceId: confirmed.voiceId, modelId: confirmed.modelId, loaded: true, error: null });
+				if (!confirmed || confirmed.voiceId !== next.voiceId || confirmed.modelId !== next.modelId || confirmed.autoRead !== next.autoRead) throw new Error();
+				publish({ voiceId: confirmed.voiceId, modelId: confirmed.modelId, autoRead: confirmed.autoRead, loaded: true, error: null });
 				saved();
 				return true;
 			} catch {
@@ -80,8 +82,9 @@ export function createReadAloudStore(request: typeof fetch, saved: () => void = 
 
 	return {
 		load,
-		saveVoice: (voiceId: string) => put({ voiceId, modelId: snapshot.modelId }),
-		saveModel: (modelId: string) => put({ voiceId: snapshot.voiceId, modelId }),
+		saveVoice: (voiceId: string) => put({ voiceId, modelId: snapshot.modelId, autoRead: snapshot.autoRead }),
+		saveModel: (modelId: string) => put({ voiceId: snapshot.voiceId, modelId, autoRead: snapshot.autoRead }),
+		saveAutoRead: (autoRead: boolean) => put({ voiceId: snapshot.voiceId, modelId: snapshot.modelId, autoRead }),
 		getSnapshot: () => snapshot,
 		getServerSnapshot: () => INITIAL,
 		subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
@@ -110,5 +113,5 @@ function subscribe(listener: () => void) {
 
 export function useReadAloudSettings() {
 	const snapshot = useSyncExternalStore(subscribe, store.getSnapshot, store.getServerSnapshot);
-	return { ...snapshot, saveVoice: store.saveVoice, saveModel: store.saveModel };
+	return { ...snapshot, autoRead: snapshot.autoRead === true, saveVoice: store.saveVoice, saveModel: store.saveModel, saveAutoRead: store.saveAutoRead };
 }
